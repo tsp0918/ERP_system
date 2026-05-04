@@ -44,6 +44,7 @@ def create_all_tables() -> None:
     from app.modules.mm import models as mm_models    # noqa: F401
     from app.modules.fi import models as fi_models    # noqa: F401
     from app.modules.hr import models as hr_models    # noqa: F401
+    from app.modules.gts import models as gts_models  # noqa: F401
     from app.core import auth_models                  # noqa: F401
     from app.core import numbering as _numbering      # noqa: F401
 

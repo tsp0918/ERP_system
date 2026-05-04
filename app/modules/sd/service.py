@@ -88,17 +88,30 @@ class SalesOrderService:
         self.db.add(so)
         self.db.flush()
 
-        # Run export check via AI_TradeManagement (unless skipped)
+        # Run transaction review via AI_TradeManagement (unless skipped)
         if not payload.skip_export_check:
             from app.modules.gts.service import GTSService
             try:
-                GTSService(self.db).check_export(so, customer)
+                _link, result = GTSService(self.db).transaction_review(so, customer)
+                # Keep export_check_status in sync for backward compatibility
+                if result.judgment == "APPROVED":
+                    so.export_check_status = "PASSED"
+                    so.export_check_ref = result.review_id
+                elif result.judgment == "REJECTED":
+                    so.export_check_status = "BLOCKED"
+                    so.export_check_message = result.message
+                else:  # NEEDS_REVIEW / PENDING
+                    so.export_check_status = "PENDING"
+                    so.export_check_message = result.message
             except Exception as exc:
                 so.export_check_status = "ERROR"
                 so.export_check_message = f"Integration error: {exc}"
 
-        # Auto-block on negative outcome
-        if so.export_check_status == "BLOCKED":
+        # Block on REJECTED or ERROR; NEEDS_REVIEW also blocks pending manual approval
+        if so.export_check_status in ("BLOCKED", "ERROR") or (
+            so.export_check_status == "PENDING"
+            and not payload.skip_export_check
+        ):
             so.status = DocStatus.BLOCKED
 
         return so
@@ -187,7 +200,38 @@ class DeliveryService:
 
         self.db.add(delivery)
         self.db.flush()
+
+        # Shipment re-screening via AI_TradeManagement
+        self._run_shipment_rescreen(delivery, so)
+
         return delivery
+
+    def _run_shipment_rescreen(self, delivery: models.Delivery, so: models.SalesOrder) -> None:
+        """Call AI_TM shipment/rescreen using the SO's transaction review_id."""
+        from app.modules.gts.models import AITMTransactionLink
+        from app.modules.gts.service import GTSService
+
+        tx_link = (
+            self.db.query(AITMTransactionLink)
+            .filter(AITMTransactionLink.sales_order_id == so.id)
+            .order_by(AITMTransactionLink.created_at.desc())
+            .first()
+        )
+        if not tx_link or not tx_link.review_id:
+            # No transaction review on record (legacy SO) — skip rescreen
+            return
+
+        try:
+            ship_link = GTSService(self.db).shipment_rescreen(delivery, tx_link.review_id)
+            if not ship_link.shipment_ok:
+                delivery.status = DocStatus.BLOCKED
+        except Exception as exc:
+            # Spec: if AI_TM is unreachable, keep delivery blocked
+            delivery.status = DocStatus.BLOCKED
+            import logging
+            logging.getLogger(__name__).warning(
+                "Shipment rescreen failed for DEL=%s: %s", delivery.document_number, exc
+            )
 
 
 class BillingService:

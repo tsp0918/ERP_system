@@ -28,9 +28,10 @@ class Settings(BaseSettings):
 
     # AI Trade Management
     AI_TM_BASE_URL: str = "http://localhost:5001"
-    AI_TM_API_KEY: str = "dev-key"
-    AI_TM_TIMEOUT_SECONDS: int = 10
+    AI_TM_API_KEY: str = "dev-erp-integration-key"
+    AI_TM_TIMEOUT_SECONDS: int = 30
     AI_TM_MOCK_MODE: bool = True
+    AI_TM_REVIEW_VALID_DAYS: int = 365
 
     # Seed
     INITIAL_ADMIN_EMAIL: str = "admin@example.com"

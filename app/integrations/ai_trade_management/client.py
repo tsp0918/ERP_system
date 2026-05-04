@@ -115,6 +115,54 @@ class _MockClient:
             message="All items cleared for export",
         )
 
+    def transaction_review(
+        self, req: schemas.TransactionReviewRequest
+    ) -> schemas.TransactionReviewResponse:
+        """Mock transaction review.
+
+        - Restricted country  → REJECTED
+        - Controlled keywords → NEEDS_REVIEW
+        - Otherwise           → APPROVED
+        """
+        import uuid
+
+        dest = req.destination_country
+        desc_upper = req.item_description.upper()
+
+        if dest in self.RESTRICTED_COUNTRIES:
+            judgment, approved, eccn = "REJECTED", False, None
+        elif any(kw in desc_upper for kw in self.CONTROLLED_KEYWORDS):
+            judgment, approved, eccn = "NEEDS_REVIEW", False, "3C001"
+        elif req.eccn and req.eccn not in ("EAR99", None):
+            judgment, approved, eccn = "NEEDS_REVIEW", False, req.eccn
+        else:
+            judgment, approved, eccn = "APPROVED", True, req.eccn or "EAR99"
+
+        return schemas.TransactionReviewResponse(
+            review_id=str(uuid.uuid4()),
+            erp_transaction_id=req.erp_transaction_id,
+            judgment=judgment,
+            review_level="AUTO",
+            review_completed=approved,
+            approved=approved,
+            linked_existing=False,
+            eccn=eccn,
+            message=f"[MOCK] {judgment}",
+        )
+
+    def shipment_rescreen(
+        self, req: schemas.ShipmentRescreenRequest
+    ) -> schemas.ShipmentRescreenResponse:
+        """Mock shipment re-screening — always passes in mock mode."""
+        return schemas.ShipmentRescreenResponse(
+            review_id=req.review_id,
+            erp_shipment_id=req.erp_shipment_id,
+            approved=True,
+            rescreen_changed=False,
+            judgment="APPROVED",
+            message="[MOCK] Re-screening passed. Shipment approved.",
+        )
+
     def judge_bom(self, req: schemas.BomJudgeRequest) -> schemas.BomJudgeResponse:
         """Mock BOM judgment - same logic as the stub server."""
         risk_factors: list[str] = []
@@ -198,6 +246,20 @@ class _HttpClient:
 
     def judge_bom(self, req: schemas.BomJudgeRequest) -> schemas.BomJudgeResponse:
         return schemas.BomJudgeResponse(**self._post("/gaihi/judge-bom", req.model_dump()))
+
+    def transaction_review(
+        self, req: schemas.TransactionReviewRequest
+    ) -> schemas.TransactionReviewResponse:
+        return schemas.TransactionReviewResponse(
+            **self._post("/transaction/review", req.model_dump())
+        )
+
+    def shipment_rescreen(
+        self, req: schemas.ShipmentRescreenRequest
+    ) -> schemas.ShipmentRescreenResponse:
+        return schemas.ShipmentRescreenResponse(
+            **self._post("/shipment/rescreen", req.model_dump())
+        )
 
 
 # ------------------------------------------------------------------

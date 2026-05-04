@@ -111,3 +111,50 @@ class BomJudgeResponse(BaseModel):
     controlled_components: List[str] = []
     foreign_origin_share_percent: float = 0.0
     rationale: str
+
+
+# ------------------------------------------------------------------
+# Transaction review  (POST /transaction/review)
+# ------------------------------------------------------------------
+class TransactionReviewRequest(BaseModel):
+    erp_transaction_id: str
+    item_code: str
+    item_name: str
+    item_description: str
+    hs_code: Optional[str] = None
+    eccn: Optional[str] = None
+    counterparty_name: str
+    counterparty_country: str
+    counterparty_address: Optional[str] = None
+    destination_country: str
+    quantity: float
+    value_usd: float
+
+
+class TransactionReviewResponse(BaseModel):
+    review_id: str
+    erp_transaction_id: str
+    judgment: str           # APPROVED / REJECTED / NEEDS_REVIEW / PENDING
+    review_level: str       # AUTO / MANUAL
+    review_completed: bool
+    approved: bool
+    linked_existing: bool
+    eccn: Optional[str] = None
+    message: Optional[str] = None
+
+
+# ------------------------------------------------------------------
+# Shipment re-screening  (POST /shipment/rescreen)
+# ------------------------------------------------------------------
+class ShipmentRescreenRequest(BaseModel):
+    review_id: str
+    erp_shipment_id: str
+
+
+class ShipmentRescreenResponse(BaseModel):
+    review_id: str
+    erp_shipment_id: str
+    approved: bool
+    rescreen_changed: bool
+    judgment: str
+    message: Optional[str] = None
