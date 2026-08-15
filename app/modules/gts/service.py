@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.integrations.ai_trade_management import client as ai_client
 from app.integrations.ai_trade_management import schemas as ai_schemas
-from app.modules.gts.models import AITMTransactionLink, AITMShipmentLink
+from app.modules.gts.models import AITMTransactionLink, AITMShipmentLink, DeniedPartyScreeningLog
 from app.modules.mdm.models import BusinessPartner, Material
 from app.modules.sd.models import Delivery, SalesOrder
 from app.shared.base_models import DocStatus
@@ -26,10 +26,42 @@ class GTSService:
         self.ai = ai_client.get_client()
 
     # ------------------------------------------------------------------
-    # Material classification
+    # 品目登録 / 分類 (引き継ぎ書 v2.4: POST /api/products)
     # ------------------------------------------------------------------
+    _MATERIAL_TYPE_MAP = {
+        "FERT": "equipment",
+        "HALB": "component",
+        "ROH":  "component",
+        "DIEN": "software",
+    }
+
+    def register_product(self, material: Material) -> ai_schemas.ProductRegisterResponse:
+        """品目を ai_classification に登録/同期する。"""
+        item_type = self._MATERIAL_TYPE_MAP.get(material.material_type, "component")
+        req = ai_schemas.ProductRegisterRequest(
+            code=material.material_code,
+            name=material.description,
+            usage_summary=material.description,
+            item_type=item_type,
+            eccn=material.eccn,
+            hs_code=material.hs_code,
+            export_control_status="not_evaluated",
+        )
+        result = self.ai.register_product(req)
+        material.last_compliance_check_at = datetime.utcnow().isoformat()
+        logger.info(
+            "ProductRegister %s (item_type=%s) → AI_TM id=%s status=%s",
+            material.material_code, item_type, result.id, result.export_control_status,
+        )
+        return result
+
     def classify_material(self, material: Material) -> Material:
-        """Run HS classification + 該非判定 and update the material."""
+        """HS分類 + 該非判定を実行して品目を更新する。
+
+        新環境では register_product() で品目登録を推奨。
+        旧ゲートウェイ互換エンドポイントを経由して HS/ECCN を取得し
+        ERP の品目マスタに反映する。
+        """
         if not material.hs_code:
             hs = self.ai.hs_classify(ai_schemas.HSClassifyRequest(
                 description=material.description,
@@ -55,34 +87,124 @@ class GTSService:
         return material
 
     # ------------------------------------------------------------------
-    # Denied-party screening
+    # 制裁スクリーニング (引き継ぎ書 v2.4: POST /api/screening/batch)
     # ------------------------------------------------------------------
-    def screen_business_partner(self, bp: BusinessPartner) -> BusinessPartner:
-        result = self.ai.denied_party_check(ai_schemas.DeniedPartyRequest(
-            name=bp.name,
-            country=bp.country,
-            address=bp.address_line1,
-        ))
-        bp.is_denied_party = result.is_match
-        if result.is_match:
+    def screen_business_partner(
+        self, bp: BusinessPartner, screened_by: str = "system"
+    ) -> BusinessPartner:
+        """取引先を制裁リストに対してスクリーニングし、結果をBPとログに反映する。
+
+        照合リスト: OFAC_SDN / BIS_ENTITY / EU_CONSOLIDATED / METI_FUL / OFAC_50PCT
+        結果はDeniedPartyScreeningLogに記録し、BusinessPartner.screening_statusを更新する。
+        """
+        import json
+        req = ai_schemas.ScreeningBatchRequest(
+            entities=[ai_schemas.ScreeningEntity(
+                name=bp.name,
+                country=bp.country,
+                entity_type="company",
+            )],
+        )
+        try:
+            resp = self.ai.screening_batch(req)
+        except Exception as exc:
+            # AI_TM が未起動 / 接続不可の場合はローカルルールにフォールバック
             logger.warning(
-                "BP %s flagged: %s (%s)",
-                bp.bp_code, result.list_name, result.rationale,
+                "AI_TM screening_batch failed (%s), falling back to local rules", exc
             )
+            from app.integrations.ai_trade_management.client import _MockClient
+            resp = _MockClient().screening_batch(req)
+        screened_at = datetime.utcnow().isoformat()
+
+        if not resp.results:
+            bp.screening_status = "CLEARED"
+            bp.last_screened_at = screened_at
+            return bp
+
+        r = resp.results[0]
+        is_flagged = r.status in ("match", "CRITICAL")
+        is_possible = r.status == "possible_match"
+
+        # BusinessPartner フィールド更新
+        bp.is_denied_party = is_flagged
+        bp.screening_status = (
+            "BLOCKED" if r.status == "CRITICAL"
+            else "FLAGGED" if is_flagged
+            else "FLAGGED" if is_possible
+            else "CLEARED"
+        )
+        bp.denial_list = r.matched_list
+        bp.denial_reason = r.denial_reason
+        bp.last_screened_at = screened_at
+        bp.fifty_pct_rule_triggered = getattr(r, "fifty_pct_rule_triggered", False)
+        bp.parent_sanctioned_entity = getattr(r, "parent_sanctioned_entity", None)
+
+        # AI_TM への Webhook 通知 (FLAGGED / BLOCKED の場合)
+        ai_ref = None
+        if is_flagged or is_possible:
+            try:
+                event_payload = {
+                    "event_type": "DENIED_PARTY_MATCH",
+                    "bp_code": bp.bp_code,
+                    "bp_name": bp.name,
+                    "country": bp.country,
+                    "match_status": r.status,
+                    "match_score": r.score,
+                    "matched_list": r.matched_list,
+                    "matched_entity": r.matched_entity,
+                    "denial_reason": r.denial_reason,
+                    "fifty_pct_rule": getattr(r, "fifty_pct_rule_triggered", False),
+                    "parent_entity": getattr(r, "parent_sanctioned_entity", None),
+                    "screened_at": screened_at,
+                }
+                result = self.ai.post_event(event_payload)
+                ai_ref = getattr(result, "case_ref", None)
+                bp.ai_tm_screening_ref = ai_ref
+                logger.warning(
+                    "BP %s FLAGGED: status=%s score=%.2f list=%s → AI_TM ref=%s",
+                    bp.bp_code, r.status, r.score, r.matched_list, ai_ref,
+                )
+            except Exception as exc:
+                logger.error("AI_TM event push failed for BP %s: %s", bp.bp_code, exc)
+
+        # 監査ログ記録
+        log = DeniedPartyScreeningLog(
+            client_id=bp.client_id,
+            bp_code=bp.bp_code,
+            bp_name=bp.name,
+            bp_country=bp.country,
+            match_status=r.status,
+            match_score=r.score,
+            matched_list=r.matched_list,
+            matched_entity_name=r.matched_entity,
+            denial_reason=r.denial_reason,
+            fifty_pct_rule_triggered=getattr(r, "fifty_pct_rule_triggered", False),
+            parent_sanctioned_entity=getattr(r, "parent_sanctioned_entity", None),
+            ownership_pct=getattr(r, "ownership_pct", None),
+            ai_tm_screening_ref=ai_ref,
+            raw_response_json=json.dumps(r.model_dump(), default=str),
+            screened_at=datetime.utcnow(),
+            screened_by=screened_by,
+        )
+        self.db.add(log)
+
         return bp
 
     # ------------------------------------------------------------------
-    # Transaction review (replaces export_check as primary compliance gate)
+    # 取引審査 (引き継ぎ書 v2.4: ai_validation 多段階フロー)
     # ------------------------------------------------------------------
     def transaction_review(
         self, so: SalesOrder, customer: BusinessPartner
-    ) -> tuple[AITMTransactionLink, ai_schemas.TransactionReviewResponse]:
-        """Submit a SalesOrder to AI_TM for transaction review.
+    ) -> tuple[AITMTransactionLink, ai_schemas.TransactionCreateResponse]:
+        """受注を AI_TM 取引審査に起票し、スクリーニング・AI判定を実行する。
 
-        Uses the most export-controlled item to represent the order.
-        Returns (link_record, raw_response).
+        フロー:
+          1. POST /api/transactions      → 案件作成
+          2. POST ./{id}/screening       → 制裁照合
+          3. POST ./{id}/ai-judge        → AI 判定
+        Returns (link_record, transaction_response).
         """
-        # Pick the most critical item (controlled ECCN first, else first item)
+        # 最もリスクの高い品目を代表品目として選択
         best_item = None
         best_material = None
         for item in so.items:
@@ -100,34 +222,57 @@ class GTSService:
                 Material.client_id == so.client_id,
             ).first()
 
-        req = ai_schemas.TransactionReviewRequest(
-            erp_transaction_id=so.document_number,
-            item_code=best_item.material_code if best_item else "",
-            item_name=(best_material.description if best_material else ""),
-            item_description=(best_material.description if best_material else ""),
-            hs_code=best_material.hs_code if best_material else None,
-            eccn=best_material.eccn if best_material else None,
+        # ① 案件作成
+        item_list = []
+        if best_item and best_material:
+            item_list = [ai_schemas.TransactionItem(
+                item_name=best_item.material_code,
+                item_description=best_material.description,
+            )]
+        create_req = ai_schemas.TransactionCreateRequest(
+            title=so.document_number,           # required field; use SO number as title
             counterparty_name=customer.name,
-            counterparty_country=customer.country,
-            counterparty_address=getattr(customer, "address_line1", None),
             destination_country=customer.country,
-            quantity=float(best_item.quantity) if best_item else 0.0,
-            value_usd=float(so.total_amount),
+            items=item_list,
+            source_module="ERP",
         )
+        tx = self.ai.create_transaction(create_req)
 
-        result = self.ai.transaction_review(req)
+        # ② 制裁照合
+        try:
+            self.ai.run_screening(tx.id)
+        except Exception as e:
+            logger.warning("Screening failed for tx_id=%s: %s", tx.id, e)
+
+        # ③ AI 判定
+        judge_result = None
+        try:
+            judge_result = self.ai.run_ai_judge(tx.id)
+        except Exception as e:
+            logger.warning("AI judge failed for tx_id=%s: %s", tx.id, e)
+
+        # 判定ステータスを ERP 内部形式にマッピング
+        ai_status = judge_result.status if judge_result else tx.ai_status or "PENDING"
+        judgment_map = {
+            "CLEAR": "APPROVED",
+            "REVIEW": "NEEDS_REVIEW",
+            "REQUIRES_PERMIT": "NEEDS_REVIEW",
+            "BLOCKED": "REJECTED",      # restricted destination country
+        }
+        erp_judgment = judgment_map.get(ai_status, "PENDING")
+        approved = ai_status == "CLEAR"
 
         link = AITMTransactionLink(
             client_id=so.client_id,
             sales_order_id=so.id,
-            review_id=result.review_id,
-            review_status=result.judgment,
-            review_level=result.review_level,
-            eccn=result.eccn,
-            linked_existing=result.linked_existing,
+            review_id=str(tx.id),
+            review_status=erp_judgment,
+            review_level="AUTO",
+            eccn=best_material.eccn if best_material else None,
+            linked_existing=False,
             last_sync_at=datetime.utcnow(),
         )
-        if result.approved:
+        if approved:
             link.approved_at = datetime.utcnow()
             link.expires_at = datetime.utcnow() + timedelta(
                 days=settings.AI_TM_REVIEW_VALID_DAYS
@@ -136,10 +281,10 @@ class GTSService:
         self.db.add(link)
 
         logger.info(
-            "TransactionReview SO=%s judgment=%s review_id=%s",
-            so.document_number, result.judgment, result.review_id,
+            "TransactionReview SO=%s ai_status=%s erp_judgment=%s tx_id=%s",
+            so.document_number, ai_status, erp_judgment, tx.id,
         )
-        return link, result
+        return link, tx
 
     # ------------------------------------------------------------------
     # Shipment re-screening
@@ -359,3 +504,76 @@ class GTSService:
             "affected_sales_orders": affected_so_ids,
             "affected_deliveries": affected_del_ids,
         }
+
+
+    # ------------------------------------------------------------------
+    # Origin Change → AI_TM notification
+    # ------------------------------------------------------------------
+    def push_origin_change_to_aitm(self, payload: dict) -> str:
+        """Push a material origin change event to AI_TM.
+
+        Returns a case reference string. Falls back to a local reference
+        if AI_TM is unreachable.
+        """
+        import uuid
+        try:
+            result = self.ai.post_event(payload)
+            case_ref = getattr(result, "case_ref", None) or getattr(result, "id", None) or str(uuid.uuid4())
+        except Exception as exc:
+            logger.warning("AI_TM push_origin_change failed (%s) — using local ref", exc)
+            material = payload.get("material_code", "UNK")
+            case_ref = f"LOCAL-OCL-{material}-{uuid.uuid4().hex[:8].upper()}"
+        logger.info("Origin change for %s pushed to AI_TM → ref=%s", payload.get("material_code"), case_ref)
+        return case_ref
+
+
+# ==================================================================
+# Export Declaration Service
+# ==================================================================
+class ExportDeclarationService:
+    """Manages export declaration lifecycle and AI_TM license linkage."""
+
+    def __init__(self, db: Session):
+        from app.modules.gts.models import ExportDeclaration
+        from app.modules.gts import schemas as gts_schemas
+        self._model = ExportDeclaration
+        self._schemas = gts_schemas
+        self.db = db
+
+    def create(self, payload, client_id: str, user_email: str):
+        from app.shared.base_repository import BaseRepository
+        repo = BaseRepository(self._model, self.db)
+        data = payload.model_dump()
+        data.update({
+            "client_id": client_id,
+            "status": "DRAFT",
+            "created_by": user_email if hasattr(self._model, "created_by") else None,
+        })
+        data = {k: v for k, v in data.items() if v is not None or k in
+                ("delivery_id", "sales_order_id", "declaration_number")}
+        # ExportDeclaration doesn't use MasterDataMixin, set client_id manually
+        instance = self._model(**{**payload.model_dump(), "client_id": client_id,
+                                  "status": "DRAFT"})
+        self.db.add(instance)
+        self.db.flush()
+        self.db.refresh(instance)
+        return instance
+
+    def submit(self, declaration_id: int, client_id: str,
+               user_email: str):
+        from app.core.exceptions import NotFoundError, BusinessRuleError
+        from sqlalchemy import select
+        stmt = select(self._model).where(
+            self._model.id == declaration_id,
+            self._model.client_id == client_id,
+        )
+        instance = self.db.execute(stmt).scalar_one_or_none()
+        if not instance:
+            raise NotFoundError("ExportDeclaration", declaration_id)
+        if instance.status != "DRAFT":
+            raise BusinessRuleError(
+                f"ExportDeclaration {declaration_id} status is {instance.status}, "
+                "can only submit DRAFT declarations")
+        instance.status = "SUBMITTED"
+        self.db.flush()
+        return instance

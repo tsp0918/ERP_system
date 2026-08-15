@@ -1,0 +1,9 @@
+bp_code,bp_type,name,country,roles,email,phone,address_line1,city,postal_code,credit_limit,payment_terms,currency,auto_screen
+CUST-JP-01,ORG,Tokyo Precision Industries Co. Ltd.,JP,CUSTOMER,procurement@tpi.co.jp,+81-3-1234-5678,1-1 Marunouchi Chiyoda-ku,Tokyo,100-0005,5000000,NET30,JPY,false
+CUST-DE-01,ORG,TechCorp GmbH,DE,CUSTOMER,sales@techcorp.de,+49-89-123456,Musterstraße 1,Munich,80331,200000,NET30,EUR,false
+CUST-US-01,ORG,Silicon Valley Dynamics Inc.,US,CUSTOMER,orders@svd.com,+1-408-555-0100,100 Innovation Drive,San Jose,95128,300000,NET60,USD,false
+CUST-TW-01,ORG,Taiwan Semiconductor Solutions Ltd.,TW,CUSTOMER,purchase@tssl.com.tw,+886-3-567-8901,No.9 Science Road,Hsinchu,30078,150000,NET30,USD,false
+CUST-SG-01,ORG,Asia Pacific Tech Pte. Ltd.,SG,CUSTOMER,ap@aptech.sg,+65-6123-4567,1 Marina Boulevard,Singapore,018989,100000,NET30,USD,false
+VEND-JP-01,ORG,Nippon Components Supply K.K.,JP,VENDOR,supply@nipponcomp.co.jp,+81-6-2345-6789,3-5 Nakanoshima,Osaka,530-0005,,,JPY,false
+VEND-US-01,ORG,Micron Technology Inc.,US,VENDOR,erp@micron.com,+1-208-368-4000,8000 S Federal Way,Boise,83716,,,USD,false
+CUST-KR-01,ORG,Korea Electronics Corp.,KR,CUSTOMER,intl@kec.co.kr,+82-2-3456-7890,100 Teheran-ro Gangnam-gu,Seoul,06235,120000,NET30,USD,false

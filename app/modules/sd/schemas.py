@@ -35,6 +35,14 @@ class SalesOrderItemResponse(ORMModel):
 # ==================================================================
 # Sales Order
 # ==================================================================
+class EndUserCreate(BaseModel):
+    """End-user BP to be created automatically when CRM sends end_user on contract (IF-25)."""
+    name: str
+    country: str = Field(..., min_length=2, max_length=2)
+    address: Optional[str] = None
+    crm_account_id: Optional[str] = None
+
+
 class SalesOrderCreate(BaseModel):
     sales_org_code: Optional[str] = None
     customer_code: str = Field(..., examples=["BP-0000001"])
@@ -48,6 +56,16 @@ class SalesOrderCreate(BaseModel):
 
     skip_export_check: bool = Field(False,
         description="If true, do not call AI_TradeManagement export-check on create")
+
+    # CRM integration fields (IF-25)
+    crm_contract_id: Optional[str] = None
+    crm_engagement_id: Optional[str] = None
+    aitm_transaction_id: Optional[str] = Field(None,
+        description="Existing AI_TM transaction ID sent by CRM (IF-25). Links to existing review instead of creating new one.")
+    end_user: Optional[EndUserCreate] = Field(None,
+        description="End-user BP to auto-create with auto_screen=true")
+    contract_start_date: Optional[date] = None
+    contract_end_date: Optional[date] = None
 
 
 class SalesOrderUpdate(BaseModel):
@@ -74,6 +92,14 @@ class SalesOrderResponse(ORMModel):
     export_check_status: str
     export_check_ref: Optional[str]
     export_check_message: Optional[str]
+    # CRM integration fields
+    crm_contract_id: Optional[str] = None
+    crm_engagement_id: Optional[str] = None
+    aitm_transaction_id: Optional[str] = None
+    aitm_allocation_id: Optional[str] = None
+    end_user_bp_code: Optional[str] = None
+    contract_start_date: Optional[date] = None
+    contract_end_date: Optional[date] = None
     items: List[SalesOrderItemResponse]
     created_at: datetime
     updated_at: datetime
@@ -115,6 +141,8 @@ class DeliveryResponse(ORMModel):
     sales_order_id: int
     plant_code: Optional[str]
     actual_delivery_date: Optional[date]
+    aitm_case_no: Optional[str]
+    aitm_approval_status: Optional[str]
     items: List[DeliveryItemResponse]
     created_at: datetime
 
@@ -151,5 +179,6 @@ class BillingResponse(ORMModel):
     tax_amount: Decimal
     gross_amount: Decimal
     payment_terms: Optional[str]
+    aitm_case_no: Optional[str]
     items: List[BillingItemResponse]
     created_at: datetime

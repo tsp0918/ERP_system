@@ -1,0 +1,4 @@
+sales_order_number,document_date,plant_code,actual_delivery_date
+10300000,2026-06-15,P001,2026-06-18
+10300001,2026-06-16,P001,2026-06-20
+10300002,2026-06-17,P001,2026-06-22

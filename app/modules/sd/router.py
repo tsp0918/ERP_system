@@ -253,5 +253,141 @@ def download_billing_pdf(
     )
 
 
+# ==================================================================
+# Sales Forecast (PIR)
+# ==================================================================
+from typing import Optional as _Opt
+from pydantic import BaseModel as _BM
+from decimal import Decimal as _Dec
+
+forecast_router = APIRouter(prefix="/sd/forecasts", tags=["SD - Sales Forecast"])
+
+
+class SalesForecastCreate(_BM):
+    material_code: str
+    plant_code: _Opt[str] = None
+    customer_code: _Opt[str] = None
+    sales_org_code: _Opt[str] = None
+    year: int
+    month: int
+    forecast_quantity: _Dec
+    quantity_unit: str = "KG"
+    forecast_value: _Dec = _Dec("0")
+    currency: str = "JPY"
+    version: str = "BASELINE"
+    notes: _Opt[str] = None
+
+
+class SalesForecastResponse(_BM):
+    id: int
+    material_code: str
+    plant_code: _Opt[str]
+    customer_code: _Opt[str]
+    year: int
+    month: int
+    forecast_quantity: _Dec
+    quantity_unit: str
+    forecast_value: _Dec
+    currency: str
+    version: str
+    notes: _Opt[str]
+
+    class Config:
+        from_attributes = True
+
+
+@forecast_router.get("", response_model=list[SalesForecastResponse])
+def list_forecasts(
+    material_code: _Opt[str] = Query(None),
+    year: _Opt[int] = Query(None),
+    version: str = Query("BASELINE"),
+    skip: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db), user: User = Depends(get_current_user),
+):
+    from app.modules.sd.models import SalesForecast
+    q = db.query(SalesForecast).filter(
+        SalesForecast.client_id == user.client_id,
+        SalesForecast.version == version,
+    )
+    if material_code:
+        q = q.filter(SalesForecast.material_code == material_code)
+    if year:
+        q = q.filter(SalesForecast.year == year)
+    return q.order_by(SalesForecast.year, SalesForecast.month,
+                      SalesForecast.material_code).offset(skip).limit(limit).all()
+
+
+@forecast_router.put("", response_model=SalesForecastResponse,
+                     summary="Upsert a monthly sales forecast")
+def upsert_forecast(
+    body: SalesForecastCreate,
+    db: Session = Depends(get_db), user: User = Depends(get_current_user),
+):
+    from app.modules.sd.models import SalesForecast
+    existing = db.query(SalesForecast).filter(
+        SalesForecast.client_id == user.client_id,
+        SalesForecast.material_code == body.material_code,
+        SalesForecast.year == body.year,
+        SalesForecast.month == body.month,
+        SalesForecast.version == body.version,
+    ).first()
+    if existing:
+        for k, v in body.model_dump().items():
+            setattr(existing, k, v)
+        existing.updated_by = user.email
+    else:
+        existing = SalesForecast(**body.model_dump(),
+                                 client_id=user.client_id,
+                                 created_by=user.email, updated_by=user.email)
+        db.add(existing)
+    db.commit()
+    db.refresh(existing)
+    return existing
+
+
+@forecast_router.get("/summary", summary="Monthly forecast vs actual summary")
+def forecast_vs_actual(
+    year: int, version: str = "BASELINE",
+    db: Session = Depends(get_db), user: User = Depends(get_current_user),
+):
+    from app.modules.sd.models import SalesForecast, SalesOrderItem, SalesOrder
+    from sqlalchemy import func
+    forecasts = db.query(SalesForecast).filter(
+        SalesForecast.client_id == user.client_id,
+        SalesForecast.year == year,
+        SalesForecast.version == version,
+    ).all()
+    # Actual SO completed amounts per material per month
+    actuals = db.execute(
+        __import__('sqlalchemy').text("""
+            SELECT strftime('%m', so.document_date) AS month,
+                   soi.material_code,
+                   SUM(soi.quantity) AS actual_qty,
+                   SUM(soi.net_amount) AS actual_value
+            FROM sales_order_items soi
+            JOIN sales_orders so ON so.id = soi.sales_order_id
+            WHERE so.client_id = :cid
+              AND strftime('%Y', so.document_date) = :yr
+              AND so.status = 'COMPLETED'
+            GROUP BY month, soi.material_code
+        """),
+        {"cid": user.client_id, "yr": str(year)}
+    ).fetchall()
+    actual_map = {(int(r.month), r.material_code): {"qty": float(r.actual_qty), "value": float(r.actual_value)}
+                  for r in actuals}
+    result = []
+    for f in forecasts:
+        actual = actual_map.get((f.month, f.material_code), {"qty": 0, "value": 0})
+        result.append({
+            "material_code": f.material_code, "year": f.year, "month": f.month,
+            "forecast_qty": float(f.forecast_quantity),
+            "actual_qty": actual["qty"],
+            "attainment_pct": round(actual["qty"] / float(f.forecast_quantity) * 100, 1) if f.forecast_quantity else None,
+            "forecast_value": float(f.forecast_value),
+            "actual_value": actual["value"],
+        })
+    return sorted(result, key=lambda x: (x["month"], x["material_code"]))
+
+
 def get_sd_routers() -> list[APIRouter]:
-    return [so_router, delivery_router, billing_router]
+    return [so_router, delivery_router, billing_router, forecast_router]

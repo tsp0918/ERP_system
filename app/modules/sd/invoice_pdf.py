@@ -107,6 +107,7 @@ class InvoicePdfGenerator:
         story = []
         story += self._build_header(seller_company, billing)
         story += self._build_parties(seller_company, customer, billing)
+        story += self._build_aitm_approval(billing)
         story += self._build_line_table(billing, material_descriptions)
         story += self._build_totals(billing)
         story += self._build_footer(billing)
@@ -182,6 +183,35 @@ class InvoicePdfGenerator:
             ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ]))
         return [t, Spacer(1, 5 * mm)]
+
+    # ---- AI_TM approval banner ----
+    def _build_aitm_approval(self, billing):
+        case_no = getattr(billing, "aitm_case_no", None)
+        if not case_no:
+            return []
+
+        APPROVAL_GREEN = colors.HexColor("#d1fae5")
+        APPROVAL_BORDER = colors.HexColor("#059669")
+        small = ParagraphStyle(
+            "aitm", parent=self.styles["Normal"], fontSize=9, leading=12,
+        )
+        text = (
+            f"<b>Trade Compliance Approval  /  輸出コンプライアンス承認</b><br/>"
+            f"AI_TradeManagement Case No: <b>{case_no}</b> — "
+            f"Screened &amp; Cleared  ✓"
+        )
+        t = Table(
+            [[Paragraph(text, small)]],
+            colWidths=[170 * mm],
+        )
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), APPROVAL_GREEN),
+            ("BOX", (0, 0), (-1, -1), 1.0, APPROVAL_BORDER),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        return [t, Spacer(1, 4 * mm)]
 
     # ---- line table ----
     def _build_line_table(self, billing, descriptions):

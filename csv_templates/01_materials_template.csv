@@ -1,0 +1,6 @@
+material_code,description,material_type,base_unit,weight_kg,standard_price,currency,hs_code,eccn,country_of_origin,auto_classify
+CTRL-HC200,High-Capacity DRAM Controller v2,FERT,PC,0.010,500.00,JPY,8542.39.00,3A001.b.1,JP,false
+SENS-IR100,Industrial IR Sensor Module,FERT,PC,0.025,320.00,JPY,9025.19.00,3A002.a,JP,false
+COMP-DDR5,DDR5 DRAM Module 32GB,HALB,PC,0.008,85.00,USD,8473.30.00,3A001.a.1,US,false
+SW-CTRL-FW,Firmware for CTRL Series,FERT,LIC,0.000,150.00,USD,,5D002.c.1,JP,false
+MAT-ALUM-A,Aluminum Alloy Sheet A5052,ROH,KG,1.000,8.50,JPY,7606.12.00,,JP,false

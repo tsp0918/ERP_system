@@ -128,4 +128,67 @@ class BusinessPartnerResponse(BusinessPartnerBase, AuditFields):
     id: int
     bp_code: str
     is_denied_party: bool
+    screening_status: str = "UNSCREENED"
+    denial_list: Optional[str] = None
+    denial_reason: Optional[str] = None
+    last_screened_at: Optional[str] = None
+    fifty_pct_rule_triggered: bool = False
+    parent_sanctioned_entity: Optional[str] = None
+    ai_tm_screening_ref: Optional[str] = None
+    is_active: bool
+
+
+# ==================================================================
+# Material Plant (MRP/Procurement view per plant)
+# ==================================================================
+class MaterialPlantBase(BaseModel):
+    material_code: str = Field(..., max_length=20)
+    plant_code: str = Field(..., max_length=10)
+    procurement_type: str = Field("F", max_length=2,
+        description="E=In-house / F=External / X=Both")
+    special_procurement_type: Optional[str] = Field(None, max_length=5)
+    mrp_type: str = Field("ND", max_length=5,
+        description="ND=None / PD=MRP / VB=Reorder point")
+    reorder_point: Optional[Decimal] = None
+    safety_stock: Optional[Decimal] = None
+    max_stock_level: Optional[Decimal] = None
+    lot_size_key: str = Field("EX", max_length=5,
+        description="EX=Exact / FX=Fixed / HB=Replenishment")
+    fixed_lot_size: Optional[Decimal] = None
+    min_lot_size: Optional[Decimal] = None
+    max_lot_size: Optional[Decimal] = None
+    rounding_value: Optional[Decimal] = None
+    planned_delivery_days: int = Field(0, ge=0)
+    in_house_production_days: int = Field(0, ge=0)
+    goods_receipt_processing_days: int = Field(0, ge=0)
+    storage_location: Optional[str] = Field(None, max_length=10)
+    stock_unit: str = Field("PC", max_length=5)
+
+
+class MaterialPlantCreate(MaterialPlantBase):
+    pass
+
+
+class MaterialPlantUpdate(BaseModel):
+    procurement_type: Optional[str] = None
+    special_procurement_type: Optional[str] = None
+    mrp_type: Optional[str] = None
+    reorder_point: Optional[Decimal] = None
+    safety_stock: Optional[Decimal] = None
+    max_stock_level: Optional[Decimal] = None
+    lot_size_key: Optional[str] = None
+    fixed_lot_size: Optional[Decimal] = None
+    min_lot_size: Optional[Decimal] = None
+    max_lot_size: Optional[Decimal] = None
+    rounding_value: Optional[Decimal] = None
+    planned_delivery_days: Optional[int] = None
+    in_house_production_days: Optional[int] = None
+    goods_receipt_processing_days: Optional[int] = None
+    storage_location: Optional[str] = None
+    stock_unit: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class MaterialPlantResponse(MaterialPlantBase, AuditFields):
+    id: int
     is_active: bool

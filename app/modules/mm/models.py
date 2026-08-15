@@ -1,29 +1,32 @@
 """Materials Management - SQLAlchemy models.
 
 Phase 2C entities (procure-to-pay flow):
-- PurchaseRequisition (PR): 購買依頼 (内部の発注予定)
-- PurchaseOrder (PO):       購買発注 (ベンダー宛の正式発注書)
-- GoodsReceipt (GR):        入庫実績
-- InvoiceReceipt (IR):      仕入請求書受領 (3-way match の起点)
+- PurchaseRequisition (PR)  : 購買依頼
+- PurchaseOrder (PO)        : 購買発注
+- GoodsReceipt (GR)         : 入庫実績
+- InvoiceReceipt (IR)       : 仕入請求書受領 (3-way match)
+
+Phase 3 entities (inventory & supplier master):
+- PurchasingInfoRecord      : 購買情報レコード (品目×ベンダー価格・条件)
+- SourceList                : ソースリスト (調達先優先順位)
+- StockBalance              : 在庫残高 (プラント×保管場所)
+- Reservation               : 在庫引当 (製造指図・受注からの所要量)
 
 Document chain (SAP MM standard):
     PR  -> PO -> GR -> IR
-                  └----┘  → 3-way match → AP posting (Phase 2D)
-
-各文書は DocumentMixin を継承するため、document_number / status /
-reference (上流文書への参照) を共通で持つ。
+                  └----┘  → 3-way match → AP posting
 """
 from datetime import date
 from decimal import Decimal
 from typing import List, Optional
 
 from sqlalchemy import (
-    Boolean, Date, ForeignKey, Integer, Numeric, String, UniqueConstraint,
+    Boolean, Date, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
-from app.shared.base_models import AuditMixin, DocumentMixin
+from app.shared.base_models import AuditMixin, DocumentMixin, MasterDataMixin
 
 
 # ==================================================================
@@ -259,3 +262,190 @@ class InvoiceReceiptItem(AuditMixin, Base):
 
     invoice_receipt: Mapped["InvoiceReceipt"] = relationship(
         "InvoiceReceipt", back_populates="items")
+
+
+# ==================================================================
+# Purchasing Info Record (購買情報レコード)
+# ==================================================================
+class PurchasingInfoRecord(MasterDataMixin, Base):
+    """品目 × ベンダーごとの購買条件マスタ。SAP の EINA/EINP 相当。
+
+    マルチサプライヤー対応の基盤。同一品目に対して複数ベンダーの
+    価格・リードタイム・最小発注量・原産国を管理する。
+    """
+    __tablename__ = "purchasing_info_records"
+    __table_args__ = (
+        UniqueConstraint("client_id", "material_code", "vendor_code", "plant_code",
+                         name="uq_pir_client_mat_vendor_plant"),
+    )
+
+    material_code: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+    vendor_code: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+    plant_code: Mapped[Optional[str]] = mapped_column(String(10), index=True)
+    # plant_code=NULL は全プラント共通
+
+    # 価格条件
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(15, 4), nullable=False)
+    price_unit: Mapped[Decimal] = mapped_column(Numeric(15, 3), default=Decimal("1"))
+    # price_unit=100 の場合、unit_price は 100個あたりの価格
+    currency: Mapped[str] = mapped_column(String(3), default="JPY")
+    price_valid_from: Mapped[Optional[date]] = mapped_column(Date)
+    price_valid_to: Mapped[Optional[date]] = mapped_column(Date)
+
+    # 発注条件
+    min_order_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 3))
+    max_order_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 3))
+    order_unit: Mapped[str] = mapped_column(String(5), default="PC")
+    planned_delivery_days: Mapped[int] = mapped_column(Integer, default=0)
+    incoterms: Mapped[Optional[str]] = mapped_column(String(10))
+    payment_terms: Mapped[Optional[str]] = mapped_column(String(20))
+
+    # 原産国 (ベンダー調達先ごとに異なる場合がある)
+    country_of_origin: Mapped[Optional[str]] = mapped_column(String(2))
+    # ISO 3166-1 alpha-2
+
+    # ベンダー品番 (相互参照)
+    vendor_material_code: Mapped[Optional[str]] = mapped_column(String(50))
+    vendor_material_name: Mapped[Optional[str]] = mapped_column(String(255))
+
+    # 優先フラグ (ソースリストが未設定の場合のデフォルト優先サプライヤー)
+    is_preferred: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # 輸出管理 (ベンダー側の管理分類)
+    vendor_eccn: Mapped[Optional[str]] = mapped_column(String(20))
+
+
+# ==================================================================
+# Source List (ソースリスト)
+# ==================================================================
+class SourceList(MasterDataMixin, Base):
+    """品目 × プラントに対する調達先優先順位リスト。SAP の EORD 相当。
+
+    MRP 実行時や PR → PO 変換時の自動調達先決定に使用する。
+    複数ベンダーへの割当比率 (quota_percentage) も管理可能。
+    """
+    __tablename__ = "source_lists"
+    __table_args__ = (
+        UniqueConstraint("client_id", "material_code", "plant_code", "vendor_code",
+                         name="uq_source_list_client_mat_plant_vendor"),
+    )
+
+    material_code: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+    plant_code: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
+    vendor_code: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+
+    # 有効期間
+    valid_from: Mapped[date] = mapped_column(Date, default=date.today)
+    valid_to: Mapped[date] = mapped_column(Date, default=date(2099, 12, 31))
+
+    # 優先度 (1=最高優先)
+    priority: Mapped[int] = mapped_column(Integer, default=1)
+
+    # 割当比率 (複数ベンダーへのスプリット発注)
+    quota_percentage: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    # NULL=割当なし / 30.00=30%割当
+
+    # ブロックフラグ
+    is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # True の場合、このベンダーへの自動選択を禁止
+
+    # 固定ソース (MRP が他ベンダーを選択しないように固定)
+    is_fixed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # 発注タイプ
+    order_type: Mapped[str] = mapped_column(String(10), default="PO")
+    # PO=通常発注 / CONTRACT=契約 / SA=枠組み合意
+
+    pir_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("purchasing_info_records.id"), nullable=True)
+
+
+# ==================================================================
+# Stock Balance (在庫残高)
+# ==================================================================
+class StockBalance(MasterDataMixin, Base):
+    """品目 × プラント × 保管場所の在庫残高。SAP の MARD/MARA 相当。
+
+    GoodsReceipt (入庫) / DeliveryItem (出庫) / Reservation (引当) の
+    トランザクションごとに更新される。
+    """
+    __tablename__ = "stock_balances"
+    __table_args__ = (
+        UniqueConstraint("client_id", "material_code", "plant_code", "storage_location",
+                         name="uq_stock_balances_client_mat_plant_sloc"),
+    )
+
+    material_code: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+    plant_code: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
+    storage_location: Mapped[str] = mapped_column(String(10), default="0001")
+
+    # 在庫区分別数量
+    unrestricted_qty: Mapped[Decimal] = mapped_column(
+        Numeric(15, 3), default=Decimal("0"),
+        comment="自由使用在庫 (出庫・引当の対象)")
+    quality_inspection_qty: Mapped[Decimal] = mapped_column(
+        Numeric(15, 3), default=Decimal("0"),
+        comment="品質検査中在庫")
+    blocked_qty: Mapped[Decimal] = mapped_column(
+        Numeric(15, 3), default=Decimal("0"),
+        comment="ブロック在庫 (使用禁止)")
+    in_transit_qty: Mapped[Decimal] = mapped_column(
+        Numeric(15, 3), default=Decimal("0"),
+        comment="輸送中在庫 (GR 前の PO 発注済)")
+    reserved_qty: Mapped[Decimal] = mapped_column(
+        Numeric(15, 3), default=Decimal("0"),
+        comment="引当済数量 (Reservation テーブルと連動)")
+
+    stock_unit: Mapped[str] = mapped_column(String(5), default="PC")
+
+    @property
+    def available_qty(self) -> Decimal:
+        """引当後の実使用可能数量。"""
+        return self.unrestricted_qty - self.reserved_qty
+
+
+# ==================================================================
+# Reservation (在庫引当)
+# ==================================================================
+class Reservation(MasterDataMixin, Base):
+    """在庫引当レコード。SAP の RESB/RKPF 相当。
+
+    製造指図・受注・MM 手動引当から在庫を確保する。
+    引当後は StockBalance.reserved_qty を増やして二重引当を防ぐ。
+    """
+    __tablename__ = "reservations"
+    __table_args__ = (
+        UniqueConstraint("client_id", "reservation_number",
+                         name="uq_reservations_client_number"),
+    )
+
+    reservation_number: Mapped[str] = mapped_column(
+        String(20), index=True, nullable=False)
+
+    material_code: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+    plant_code: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
+    storage_location: Mapped[str] = mapped_column(String(10), default="0001")
+
+    # 引当元文書 (受注 / 製造指図 / 手動)
+    reservation_type: Mapped[str] = mapped_column(String(10), default="MANUAL")
+    # SD=受注 / PP=製造指図 / MANUAL=手動
+    source_document_type: Mapped[Optional[str]] = mapped_column(String(20))
+    source_document_id: Mapped[Optional[int]] = mapped_column(Integer)
+    source_document_item: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # 数量
+    required_qty: Mapped[Decimal] = mapped_column(Numeric(15, 3), nullable=False)
+    confirmed_qty: Mapped[Decimal] = mapped_column(
+        Numeric(15, 3), default=Decimal("0"),
+        comment="在庫確認済数量 (ATP チェック後)")
+    withdrawn_qty: Mapped[Decimal] = mapped_column(
+        Numeric(15, 3), default=Decimal("0"),
+        comment="出庫済数量")
+    stock_unit: Mapped[str] = mapped_column(String(5), default="PC")
+
+    # スケジュール
+    requirement_date: Mapped[Optional[date]] = mapped_column(Date)
+
+    # ステータス
+    status: Mapped[str] = mapped_column(String(20), default="OPEN")
+    # OPEN / PARTIALLY_WITHDRAWN / FULLY_WITHDRAWN / CANCELLED

@@ -335,8 +335,228 @@ def _to_split_response(record: models.CostComponentSplit
     )
 
 
+# ==================================================================
+# Material Alternatives
+# ==================================================================
+alt_router = APIRouter(prefix="/pp/material-alternatives",
+                       tags=["PP - Material Alternatives"])
+
+
+@alt_router.get("", response_model=PaginatedResponse[schemas.MaterialAlternativeResponse])
+def list_material_alternatives(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    recipe_id: int | None = None,
+    original_material_code: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.shared.base_repository import BaseRepository
+    repo = BaseRepository(models.MaterialAlternative, db)
+    filters = {"recipe_id": recipe_id, "original_material_code": original_material_code}
+    items = repo.list(client_id=user.client_id, filters=filters, skip=skip, limit=limit)
+    total = repo.count(client_id=user.client_id, filters=filters)
+    return PaginatedResponse(items=items, total=total, skip=skip, limit=limit)
+
+
+@alt_router.get("/{alt_id}", response_model=schemas.MaterialAlternativeResponse)
+def get_material_alternative(
+    alt_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.shared.base_repository import BaseRepository
+    instance = BaseRepository(models.MaterialAlternative, db).get(alt_id, user.client_id)
+    if not instance:
+        raise NotFoundError("MaterialAlternative", alt_id)
+    return instance
+
+
+@alt_router.post("", response_model=schemas.MaterialAlternativeResponse,
+                 status_code=status.HTTP_201_CREATED)
+def create_material_alternative(
+    payload: schemas.MaterialAlternativeCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    alt = service.MaterialAlternativeService(db).create(payload, user.client_id, user.email)
+    db.commit()
+    db.refresh(alt)
+    return alt
+
+
+@alt_router.put("/{alt_id}", response_model=schemas.MaterialAlternativeResponse)
+def update_material_alternative(
+    alt_id: int,
+    payload: schemas.MaterialAlternativeUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.shared.base_repository import BaseRepository
+    repo = BaseRepository(models.MaterialAlternative, db)
+    instance = repo.get(alt_id, user.client_id)
+    if not instance:
+        raise NotFoundError("MaterialAlternative", alt_id)
+    data = payload.model_dump(exclude_unset=True)
+    data["updated_by"] = user.email
+    repo.update(instance, data)
+    db.commit()
+    db.refresh(instance)
+    return instance
+
+
+# ==================================================================
+# Cost Sync (CostComponentSplit → Material.standard_price)
+# ==================================================================
+from typing import Optional as _Opt2
+from pydantic import BaseModel as _BM
+from sqlalchemy import text as _text
+
+cost_sync_router = APIRouter(prefix="/pp/cost-rollup", tags=["PP - Cost Rollup"])
+
+
+class CostSyncResult(_BM):
+    updated: int
+    skipped: int
+    details: list[dict]
+
+
+@cost_sync_router.post("/sync-standard-cost", response_model=CostSyncResult,
+                       summary="Push latest CostComponentSplit.total_cost → Material.standard_price")
+def sync_standard_cost(
+    plant_code: _Opt2[str] = Query(None, description="Limit to one plant"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """For each material with a CostComponentSplit, update Material.standard_price
+    with the most recent valid estimate. Idempotent."""
+    sql = _text("""
+        SELECT material_code, total_cost, currency
+        FROM (
+            SELECT material_code, total_cost, currency,
+                   ROW_NUMBER() OVER (PARTITION BY material_code ORDER BY valid_from DESC) AS rn
+            FROM cost_component_splits
+            WHERE client_id = :client_id
+              AND (:plant IS NULL OR plant_code = :plant)
+        ) ranked
+        WHERE rn = 1
+    """)
+    rows = db.execute(sql, {"client_id": user.client_id, "plant": plant_code}).fetchall()
+
+    from app.modules.mdm.models import Material
+
+    updated, skipped = 0, 0
+    details = []
+    for r in rows:
+        mat = db.query(Material).filter(
+            Material.client_id == user.client_id,
+            Material.material_code == r.material_code,
+        ).first()
+        if not mat:
+            skipped += 1
+            continue
+        old = mat.standard_price
+        mat.standard_price = r.total_cost
+        mat.currency = r.currency
+        mat.updated_by = user.email
+        updated += 1
+        details.append({
+            "material_code": r.material_code,
+            "old_price": float(old) if old is not None else None,
+            "new_price": float(r.total_cost),
+            "currency": r.currency,
+        })
+    db.commit()
+    return CostSyncResult(updated=updated, skipped=skipped, details=details)
+
+
+# ==================================================================
+# Production Schedule (cross-view of open process orders)
+# ==================================================================
+from pydantic import BaseModel as _BM2
+from datetime import datetime as _dt
+from decimal import Decimal as _Dec
+
+schedule_router = APIRouter(prefix="/pp/schedule", tags=["PP - Production Schedule"])
+
+
+class ScheduleComponent(_BM2):
+    material_code: str
+    planned_quantity: _Dec
+    issued_quantity: _Dec
+    remaining_quantity: _Dec
+    unit: str
+
+
+class ProductionScheduleItem(_BM2):
+    order_id: int
+    order_number: str
+    material_code: str
+    plant_code: str
+    status: str
+    target_quantity: _Dec
+    actual_quantity: _Dec
+    progress_percent: float
+    scheduled_start: _Opt2[_dt]
+    scheduled_end: _Opt2[_dt]
+    components: list[ScheduleComponent]
+
+
+@schedule_router.get("", response_model=list[ProductionScheduleItem],
+                     summary="Production order schedule with component requirements")
+def production_schedule(
+    status: _Opt2[str] = Query(None, examples=["OPEN", "RELEASED", "DRAFT"]),
+    material_code: _Opt2[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.modules.pp.execution_models import ProcessOrder, ProcessOrderComponent
+
+    q = db.query(ProcessOrder).filter(ProcessOrder.client_id == user.client_id)
+    if status:
+        q = q.filter(ProcessOrder.status == status)
+    else:
+        q = q.filter(ProcessOrder.status.in_(["DRAFT", "OPEN", "RELEASED"]))
+    if material_code:
+        q = q.filter(ProcessOrder.material_code == material_code)
+    orders = q.order_by(ProcessOrder.scheduled_start.asc().nullslast()).limit(limit).all()
+
+    result = []
+    for o in orders:
+        comps = db.query(ProcessOrderComponent).filter(
+            ProcessOrderComponent.process_order_id == o.id
+        ).all()
+        progress = (float(o.actual_quantity) / float(o.target_quantity) * 100
+                    if o.target_quantity else 0)
+        result.append(ProductionScheduleItem(
+            order_id=o.id,
+            order_number=o.document_number,
+            material_code=o.material_code,
+            plant_code=o.plant_code,
+            status=o.status,
+            target_quantity=o.target_quantity,
+            actual_quantity=o.actual_quantity,
+            progress_percent=round(progress, 1),
+            scheduled_start=o.scheduled_start,
+            scheduled_end=o.scheduled_end,
+            components=[
+                ScheduleComponent(
+                    material_code=c.material_code,
+                    planned_quantity=c.planned_quantity,
+                    issued_quantity=c.issued_quantity,
+                    remaining_quantity=c.planned_quantity - c.issued_quantity,
+                    unit=c.unit,
+                )
+                for c in comps
+            ],
+        ))
+    return result
+
+
 def get_pp_routers() -> list[APIRouter]:
     return [
         work_centers_router, recipes_router, explosion_router,
         routings_router, pv_router, cost_router, compliance_router,
+        alt_router, cost_sync_router, schedule_router,
     ]

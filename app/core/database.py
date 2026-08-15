@@ -47,5 +47,9 @@ def create_all_tables() -> None:
     from app.modules.gts import models as gts_models  # noqa: F401
     from app.core import auth_models                  # noqa: F401
     from app.core import numbering as _numbering      # noqa: F401
+    from app.shared import webhook_models             # noqa: F401
+    from app.modules.gts import commerce_check       # noqa: F401
+    from app.modules.gts.models import LicenseConsumptionLog  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    # Phase 3 tables are in the same model files — no extra imports needed.

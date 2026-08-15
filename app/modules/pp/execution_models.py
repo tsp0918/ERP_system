@@ -68,6 +68,9 @@ class ProcessOrder(DocumentMixin, Base):
     actual_start: Mapped[Optional[datetime]] = mapped_column(DateTime)
     actual_end: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
+    # Produced lot (Batch) code — set when GR against this order is posted
+    finished_batch_code: Mapped[Optional[str]] = mapped_column(String(50), index=True)
+
     components: Mapped[List["ProcessOrderComponent"]] = relationship(
         "ProcessOrderComponent",
         back_populates="process_order",

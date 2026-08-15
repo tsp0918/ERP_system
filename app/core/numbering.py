@@ -30,6 +30,11 @@ DEFAULT_RANGES = {
     "BILLING":       {"prefix": "",      "width": 10, "start": 90_000_000},
     "PURCHASE_ORDER":{"prefix": "",      "width": 10, "start": 4_500_000_000},
     "ACCOUNTING":    {"prefix": "",      "width": 10, "start": 1_000_000_000},
+    "RETURN":        {"prefix": "",      "width": 10, "start": 70_000_000},
+    "EXPD":          {"prefix": "EXPD-", "width": 7,  "start": 1},
+    "INSP":          {"prefix": "INSP-", "width": 7,  "start": 1},
+    "COA":           {"prefix": "COA-",  "width": 7,  "start": 1},
+    "QN":            {"prefix": "QN-",   "width": 6,  "start": 1},
 }
 
 

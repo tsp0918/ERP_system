@@ -20,6 +20,13 @@ from app.modules.mm.router import get_mm_routers
 from app.modules.fi.router import get_fi_routers
 from app.modules.hr.router import get_hr_routers
 from app.modules.gts.router import get_gts_routers
+from app.modules.gts.lot_router import get_lot_traceability_routers
+from app.modules.co.router import get_co_routers
+from app.modules.qm.router import get_qm_routers
+from app.modules.csv_import.router import get_import_routers
+from app.ui.router import get_ui_routers
+from app.shared.webhook_router import get_webhook_admin_routers
+from app.modules.sd.crm_router import get_crm_sd_routers
 
 
 # ==================================================================
@@ -41,8 +48,8 @@ app = FastAPI(
     description=(
         "Minimal global ERP for AI_TradeManagement integration testing.\n\n"
         "**Modules**: MDM (Master Data) / SD (Sales) / PP (Production) / "
-        "MM (Procurement) / FI (Accounting) / HR (Human Resources) / "
-        "GTS (Trade Compliance)\n\n"
+        "MM (Procurement) / FI (Accounting) / CO (Controlling) / "
+        "HR (Human Resources) / GTS (Trade Compliance) / QM (Quality)\n\n"
         f"**AI_TradeManagement mode**: "
         f"{'MOCK' if settings.AI_TM_MOCK_MODE else 'LIVE @ ' + settings.AI_TM_BASE_URL}"
     ),
@@ -165,4 +172,18 @@ for r in get_fi_routers():
 for r in get_hr_routers():
     app.include_router(r)
 for r in get_gts_routers():
+    app.include_router(r)
+for r in get_lot_traceability_routers():
+    app.include_router(r)
+for r in get_co_routers():
+    app.include_router(r)
+for r in get_qm_routers():
+    app.include_router(r)
+for r in get_import_routers():
+    app.include_router(r)
+for r in get_ui_routers():
+    app.include_router(r)
+for r in get_webhook_admin_routers():
+    app.include_router(r)
+for r in get_crm_sd_routers():
     app.include_router(r)

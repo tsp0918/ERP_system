@@ -119,3 +119,34 @@ class CompanyService:
             "updated_by": user_email,
         })
         return self.repo.create(data)
+
+
+class MaterialPlantService:
+    def __init__(self, db: Session):
+        self.db = db
+        self.repo = BaseRepository(models.MaterialPlant, db)
+
+    def create(
+        self,
+        payload: schemas.MaterialPlantCreate,
+        client_id: str,
+        user_email: str,
+    ) -> models.MaterialPlant:
+        # Check uniqueness: client + material + plant
+        existing = self.db.query(models.MaterialPlant).filter(
+            models.MaterialPlant.client_id == client_id,
+            models.MaterialPlant.material_code == payload.material_code,
+            models.MaterialPlant.plant_code == payload.plant_code,
+        ).first()
+        if existing:
+            raise DuplicateError(
+                "MaterialPlant", "material_code+plant_code",
+                f"{payload.material_code}/{payload.plant_code}"
+            )
+        data = payload.model_dump()
+        data.update({
+            "client_id": client_id,
+            "created_by": user_email,
+            "updated_by": user_email,
+        })
+        return self.repo.create(data)

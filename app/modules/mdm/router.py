@@ -94,6 +94,23 @@ def update_material(
     repo.update(instance, data)
     db.commit()
     db.refresh(instance)
+
+    # IF-26: notify CRM when a material record is updated
+    try:
+        from app.shared.webhook_dispatcher import enqueue_webhook
+        enqueue_webhook(db, user.client_id, "material.updated", {
+            "material_id": instance.id,
+            "material_code": instance.material_code,
+            "hs_code": instance.hs_code,
+            "eccn": instance.eccn,
+            "fefta_judgment": instance.fefta_judgment,
+            "updated_fields": list(payload.model_dump(exclude_unset=True).keys()),
+        })
+        db.commit()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("IF-26 webhook enqueue failed: %s", exc)
+
     return instance
 
 
@@ -184,9 +201,93 @@ def update_bp(
     repo.update(instance, data)
     db.commit()
     db.refresh(instance)
+
+    # IF-27: notify CRM when a BP record is updated (only CRM-linked BPs)
+    if getattr(instance, "crm_account_id", None):
+        try:
+            from app.shared.webhook_dispatcher import enqueue_webhook
+            enqueue_webhook(db, user.client_id, "bp.updated", {
+                "bp_id": instance.id,
+                "bp_code": instance.bp_code,
+                "crm_account_id": instance.crm_account_id,
+                "screening_status": instance.screening_status,
+                "is_denied_party": instance.is_denied_party,
+                "updated_fields": list(payload.model_dump(exclude_unset=True).keys()),
+            })
+            db.commit()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("IF-27 webhook enqueue failed: %s", exc)
+
+    return instance
+
+
+# ------------------------------------------------------------------
+# Material Plants (MRP/Procurement view per plant)
+# ------------------------------------------------------------------
+mp_router = APIRouter(prefix="/mdm/material-plants", tags=["MDM - Material Plants"])
+
+
+@mp_router.get("", response_model=PaginatedResponse[schemas.MaterialPlantResponse])
+def list_material_plants(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    material_code: str | None = None,
+    plant_code: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    repo = BaseRepository(models.MaterialPlant, db)
+    filters = {"material_code": material_code, "plant_code": plant_code}
+    items = repo.list(client_id=user.client_id, filters=filters, skip=skip, limit=limit)
+    total = repo.count(client_id=user.client_id, filters=filters)
+    return PaginatedResponse(items=items, total=total, skip=skip, limit=limit)
+
+
+@mp_router.get("/{item_id}", response_model=schemas.MaterialPlantResponse)
+def get_material_plant(
+    item_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    instance = BaseRepository(models.MaterialPlant, db).get(item_id, client_id=user.client_id)
+    if not instance:
+        raise NotFoundError("MaterialPlant", item_id)
+    return instance
+
+
+@mp_router.post("", response_model=schemas.MaterialPlantResponse,
+                status_code=status.HTTP_201_CREATED)
+def create_material_plant(
+    payload: schemas.MaterialPlantCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    mp = service.MaterialPlantService(db).create(payload, user.client_id, user.email)
+    db.commit()
+    db.refresh(mp)
+    return mp
+
+
+@mp_router.put("/{item_id}", response_model=schemas.MaterialPlantResponse)
+def update_material_plant(
+    item_id: int,
+    payload: schemas.MaterialPlantUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    repo = BaseRepository(models.MaterialPlant, db)
+    instance = repo.get(item_id, client_id=user.client_id)
+    if not instance:
+        raise NotFoundError("MaterialPlant", item_id)
+    data = payload.model_dump(exclude_unset=True)
+    data["updated_by"] = user.email
+    repo.update(instance, data)
+    db.commit()
+    db.refresh(instance)
     return instance
 
 
 # Aggregate router for inclusion in main app
 def get_mdm_routers() -> list[APIRouter]:
-    return [companies_router, materials_router, bp_router]
+    return [companies_router, materials_router, bp_router, mp_router]

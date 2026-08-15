@@ -35,6 +35,8 @@ def _seed_mm_ranges() -> None:
         "GOODS_RECEIPT", {"prefix": "", "width": 10, "start": 5_000_000_000})
     DEFAULT_RANGES.setdefault(
         "INVOICE_RECEIPT", {"prefix": "", "width": 10, "start": 5_100_000_000})
+    DEFAULT_RANGES.setdefault(
+        "RESERVATION", {"prefix": "RES-", "width": 7, "start": 1})
 
 
 # ==================================================================
@@ -438,3 +440,167 @@ class InvoiceReceiptService:
         self.db.add(ir)
         self.db.flush()
         return ir
+
+
+# ==================================================================
+# Purchasing Info Record
+# ==================================================================
+class PurchasingInfoRecordService:
+    def __init__(self, db: Session):
+        self.db = db
+        self.repo = BaseRepository(models.PurchasingInfoRecord, db)
+
+    def create(
+        self,
+        payload: schemas.PurchasingInfoRecordCreate,
+        client_id: str,
+        user_email: str,
+    ) -> models.PurchasingInfoRecord:
+        existing = self.db.query(models.PurchasingInfoRecord).filter(
+            models.PurchasingInfoRecord.client_id == client_id,
+            models.PurchasingInfoRecord.material_code == payload.material_code,
+            models.PurchasingInfoRecord.vendor_code == payload.vendor_code,
+            models.PurchasingInfoRecord.plant_code == payload.plant_code,
+        ).first()
+        if existing:
+            raise BusinessRuleError(
+                f"PurchasingInfoRecord already exists for "
+                f"{payload.material_code}/{payload.vendor_code}/"
+                f"{payload.plant_code or 'ALL'}"
+            )
+        data = payload.model_dump()
+        data.update({
+            "client_id": client_id,
+            "created_by": user_email,
+            "updated_by": user_email,
+        })
+        return self.repo.create(data)
+
+
+# ==================================================================
+# Source List
+# ==================================================================
+class SourceListService:
+    def __init__(self, db: Session):
+        self.db = db
+        self.repo = BaseRepository(models.SourceList, db)
+
+    def create(
+        self,
+        payload: schemas.SourceListCreate,
+        client_id: str,
+        user_email: str,
+    ) -> models.SourceList:
+        existing = self.db.query(models.SourceList).filter(
+            models.SourceList.client_id == client_id,
+            models.SourceList.material_code == payload.material_code,
+            models.SourceList.plant_code == payload.plant_code,
+            models.SourceList.vendor_code == payload.vendor_code,
+        ).first()
+        if existing:
+            raise BusinessRuleError(
+                f"SourceList entry already exists for "
+                f"{payload.material_code}/{payload.plant_code}/{payload.vendor_code}"
+            )
+        data = payload.model_dump()
+        data.update({
+            "client_id": client_id,
+            "created_by": user_email,
+            "updated_by": user_email,
+        })
+        return self.repo.create(data)
+
+
+# ==================================================================
+# Stock Balance
+# ==================================================================
+class StockBalanceService:
+    def __init__(self, db: Session):
+        self.db = db
+        self.repo = BaseRepository(models.StockBalance, db)
+
+    def create(
+        self,
+        payload: schemas.StockBalanceCreate,
+        client_id: str,
+        user_email: str,
+    ) -> models.StockBalance:
+        existing = self.db.query(models.StockBalance).filter(
+            models.StockBalance.client_id == client_id,
+            models.StockBalance.material_code == payload.material_code,
+            models.StockBalance.plant_code == payload.plant_code,
+            models.StockBalance.storage_location == payload.storage_location,
+        ).first()
+        if existing:
+            raise BusinessRuleError(
+                f"StockBalance record already exists for "
+                f"{payload.material_code}/{payload.plant_code}/{payload.storage_location}"
+            )
+        data = payload.model_dump()
+        data.update({
+            "client_id": client_id,
+            "created_by": user_email,
+            "updated_by": user_email,
+        })
+        return self.repo.create(data)
+
+    def adjust(
+        self,
+        stock_id: int,
+        client_id: str,
+        delta_unrestricted: Optional[Decimal] = None,
+        delta_reserved: Optional[Decimal] = None,
+        user_email: str = "system",
+    ) -> models.StockBalance:
+        stock = self.repo.get(stock_id, client_id)
+        if not stock:
+            raise NotFoundError("StockBalance", stock_id)
+        if delta_unrestricted is not None:
+            stock.unrestricted_qty = max(Decimal("0"),
+                                         stock.unrestricted_qty + delta_unrestricted)
+        if delta_reserved is not None:
+            stock.reserved_qty = max(Decimal("0"),
+                                     stock.reserved_qty + delta_reserved)
+        stock.updated_by = user_email
+        self.db.flush()
+        return stock
+
+
+# ==================================================================
+# Reservation
+# ==================================================================
+class ReservationService:
+    def __init__(self, db: Session):
+        self.db = db
+        self.repo = BaseRepository(models.Reservation, db)
+
+    def create(
+        self,
+        payload: schemas.ReservationCreate,
+        client_id: str,
+        user_email: str,
+    ) -> models.Reservation:
+        reservation_number = next_number(self.db, client_id, "RESERVATION")
+        data = payload.model_dump()
+        data.update({
+            "client_id": client_id,
+            "reservation_number": reservation_number,
+            "withdrawn_qty": Decimal("0"),
+            "status": "OPEN",
+            "created_by": user_email,
+            "updated_by": user_email,
+        })
+        return self.repo.create(data)
+
+    def cancel(self, reservation_id: int, client_id: str,
+               user_email: str) -> models.Reservation:
+        r = self.repo.get(reservation_id, client_id)
+        if not r:
+            raise NotFoundError("Reservation", reservation_id)
+        if r.status in {"FULLY_WITHDRAWN", "CANCELLED"}:
+            raise BusinessRuleError(
+                f"Reservation {r.reservation_number} is already {r.status}")
+        r.status = "CANCELLED"
+        r.updated_by = user_email
+        self.db.flush()
+        return r

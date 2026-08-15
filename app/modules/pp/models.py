@@ -127,6 +127,9 @@ class RecipeItem(AuditMixin, Base):
     # 投入工程 (Routing operation_no への参照。NULLなら最初の工程)
     operation_no: Mapped[Optional[int]] = mapped_column(Integer)
 
+    # 推奨サプライヤー (PurchasingInfoRecord への論理参照)
+    preferred_vendor_code: Mapped[Optional[str]] = mapped_column(String(20))
+
     recipe: Mapped["Recipe"] = relationship("Recipe", back_populates="items")
 
 
@@ -279,3 +282,49 @@ class CostComponentSplit(AuditMixin, Base):
 
     # Detailed breakdown (BOM explosion) as JSON for drill-down/audit
     breakdown_json: Mapped[Optional[str]] = mapped_column(Text)
+
+
+# ==================================================================
+# Material Alternative (代替品目)
+# ==================================================================
+class MaterialAlternative(AuditMixin, Base):
+    """BOM コンポーネントの代替品目定義。SAP の MARA AltBOM 相当。
+
+    部材不足・供給停止時に代替品番へ切り替えるルールを管理する。
+    recipe_id + original_material_code の組み合わせで複数の代替候補を定義可能。
+    """
+    __tablename__ = "material_alternatives"
+    __table_args__ = (
+        UniqueConstraint("client_id", "recipe_id", "original_material_code",
+                         "alternative_material_code",
+                         name="uq_mat_alt_client_recipe_orig_alt"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_id: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+
+    # 対象 BOM
+    recipe_id: Mapped[int] = mapped_column(
+        ForeignKey("recipes.id", ondelete="CASCADE"), index=True, nullable=False)
+
+    # 元の品目コード (BOM コンポーネント)
+    original_material_code: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+
+    # 代替品目コード
+    alternative_material_code: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+
+    # 代替比率 (1.0 = 同数量, 1.5 = 1.5倍必要)
+    substitution_ratio: Mapped[Decimal] = mapped_column(
+        Numeric(10, 4), default=Decimal("1.0"),
+        comment="代替品の必要数量 = 元数量 × substitution_ratio")
+
+    # 優先度 (1=最優先の代替品)
+    priority: Mapped[int] = mapped_column(Integer, default=1)
+
+    # 有効期間
+    valid_from: Mapped[date] = mapped_column(Date, default=date.today)
+    valid_to: Mapped[date] = mapped_column(Date, default=date(2099, 12, 31))
+
+    # 使用理由・備考
+    reason: Mapped[Optional[str]] = mapped_column(String(255))
+    # SHORTAGE=部材不足 / EOL=生産終了 / COST=コスト最適化 / QUALIFY=認定中

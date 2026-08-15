@@ -3,6 +3,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Optional
 
+from app.shared.base_schemas import AuditFields
+
 from pydantic import BaseModel, Field
 
 from app.shared.base_schemas import ORMModel
@@ -226,3 +228,173 @@ class InvoiceReceiptResponse(ORMModel):
     match_message: Optional[str]
     items: List[InvoiceReceiptItemResponse]
     created_at: datetime
+
+
+# ==================================================================
+# Purchasing Info Record (EINA/EINP equivalent)
+# ==================================================================
+class PurchasingInfoRecordBase(BaseModel):
+    material_code: str = Field(..., max_length=20)
+    vendor_code: str = Field(..., max_length=20)
+    plant_code: Optional[str] = Field(None, max_length=10,
+        description="NULL = applies to all plants")
+    unit_price: Decimal = Field(..., ge=0)
+    price_unit: Decimal = Field(Decimal("1"), gt=0,
+        description="Price per this quantity (e.g. 100 for price per 100 units)")
+    currency: str = Field("JPY", min_length=3, max_length=3)
+    price_valid_from: date = Field(default_factory=date.today)
+    price_valid_to: date = date(2099, 12, 31)
+    min_order_quantity: Optional[Decimal] = Field(None, ge=0)
+    max_order_quantity: Optional[Decimal] = Field(None, ge=0)
+    order_unit: str = Field("PC", max_length=5)
+    planned_delivery_days: int = Field(0, ge=0)
+    incoterms: Optional[str] = Field(None, max_length=10,
+        examples=["FOB", "CIF", "EXW", "DDP"])
+    payment_terms: Optional[str] = Field(None, max_length=20)
+    country_of_origin: Optional[str] = Field(None, min_length=2, max_length=2)
+    vendor_material_code: Optional[str] = Field(None, max_length=50)
+    vendor_material_name: Optional[str] = Field(None, max_length=255)
+    is_preferred: bool = False
+    vendor_eccn: Optional[str] = Field(None, max_length=20)
+
+
+class PurchasingInfoRecordCreate(PurchasingInfoRecordBase):
+    pass
+
+
+class PurchasingInfoRecordUpdate(BaseModel):
+    unit_price: Optional[Decimal] = None
+    price_unit: Optional[Decimal] = None
+    currency: Optional[str] = None
+    price_valid_from: Optional[date] = None
+    price_valid_to: Optional[date] = None
+    min_order_quantity: Optional[Decimal] = None
+    max_order_quantity: Optional[Decimal] = None
+    planned_delivery_days: Optional[int] = None
+    incoterms: Optional[str] = None
+    payment_terms: Optional[str] = None
+    country_of_origin: Optional[str] = None
+    vendor_material_code: Optional[str] = None
+    vendor_material_name: Optional[str] = None
+    is_preferred: Optional[bool] = None
+    vendor_eccn: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class PurchasingInfoRecordResponse(PurchasingInfoRecordBase, AuditFields):
+    id: int
+    is_active: bool
+
+
+# ==================================================================
+# Source List (EORD equivalent)
+# ==================================================================
+class SourceListBase(BaseModel):
+    material_code: str = Field(..., max_length=20)
+    plant_code: str = Field(..., max_length=10)
+    vendor_code: str = Field(..., max_length=20)
+    valid_from: date = Field(default_factory=date.today)
+    valid_to: date = date(2099, 12, 31)
+    priority: int = Field(1, ge=1)
+    quota_percentage: Optional[Decimal] = Field(None, ge=0, le=100,
+        description="Quota-based sourcing share (0-100%)")
+    is_blocked: bool = False
+    is_fixed: bool = Field(False,
+        description="Fixed source: MRP always uses this vendor")
+    order_type: str = Field("PO", max_length=10,
+        description="PO=Purchase Order / OA=Outline Agreement")
+    pir_id: Optional[int] = Field(None,
+        description="FK to PurchasingInfoRecord")
+
+
+class SourceListCreate(SourceListBase):
+    pass
+
+
+class SourceListUpdate(BaseModel):
+    valid_from: Optional[date] = None
+    valid_to: Optional[date] = None
+    priority: Optional[int] = None
+    quota_percentage: Optional[Decimal] = None
+    is_blocked: Optional[bool] = None
+    is_fixed: Optional[bool] = None
+    order_type: Optional[str] = None
+    pir_id: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class SourceListResponse(SourceListBase, AuditFields):
+    id: int
+    is_active: bool
+
+
+# ==================================================================
+# Stock Balance (MARD equivalent)
+# ==================================================================
+class StockBalanceBase(BaseModel):
+    material_code: str = Field(..., max_length=20)
+    plant_code: str = Field(..., max_length=10)
+    storage_location: str = Field("0001", max_length=10)
+    unrestricted_qty: Decimal = Field(Decimal("0"), ge=0)
+    quality_inspection_qty: Decimal = Field(Decimal("0"), ge=0)
+    blocked_qty: Decimal = Field(Decimal("0"), ge=0)
+    in_transit_qty: Decimal = Field(Decimal("0"), ge=0)
+    reserved_qty: Decimal = Field(Decimal("0"), ge=0)
+    stock_unit: str = Field("PC", max_length=5)
+
+
+class StockBalanceCreate(StockBalanceBase):
+    pass
+
+
+class StockBalanceUpdate(BaseModel):
+    unrestricted_qty: Optional[Decimal] = None
+    quality_inspection_qty: Optional[Decimal] = None
+    blocked_qty: Optional[Decimal] = None
+    in_transit_qty: Optional[Decimal] = None
+    reserved_qty: Optional[Decimal] = None
+    stock_unit: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class StockBalanceResponse(StockBalanceBase, AuditFields):
+    id: int
+    available_qty: Decimal
+    is_active: bool
+
+
+# ==================================================================
+# Reservation (RESB equivalent)
+# ==================================================================
+class ReservationBase(BaseModel):
+    material_code: str = Field(..., max_length=20)
+    plant_code: str = Field(..., max_length=10)
+    storage_location: Optional[str] = Field(None, max_length=10)
+    reservation_type: str = Field("MANUAL", max_length=10,
+        description="SD=Sales / PP=Production / MANUAL")
+    source_document_type: Optional[str] = Field(None, max_length=20)
+    source_document_id: Optional[int] = None
+    source_document_item: Optional[int] = None
+    required_qty: Decimal = Field(..., gt=0)
+    confirmed_qty: Optional[Decimal] = Field(None, ge=0)
+    requirement_date: Optional[date] = None
+
+
+class ReservationCreate(ReservationBase):
+    pass
+
+
+class ReservationUpdate(BaseModel):
+    confirmed_qty: Optional[Decimal] = None
+    requirement_date: Optional[date] = None
+    status: Optional[str] = Field(None,
+        description="OPEN / PARTIALLY_WITHDRAWN / FULLY_WITHDRAWN / CANCELLED")
+    is_active: Optional[bool] = None
+
+
+class ReservationResponse(ReservationBase, AuditFields):
+    id: int
+    reservation_number: str
+    withdrawn_qty: Decimal
+    status: str
+    is_active: bool

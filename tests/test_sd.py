@@ -48,8 +48,8 @@ def test_create_sales_order(db_session, admin_user, basic_master_data):
     assert so.document_number is not None
     assert len(so.items) == 1
     assert so.total_amount == Decimal("1000.00")
-    # skip_export_check=True means status remains PENDING
-    assert so.export_check_status == "PENDING"
+    # skip_export_check=True → status is SKIPPED (not checked; downstream shipment passes without rescreen)
+    assert so.export_check_status == "SKIPPED"
 
 
 def test_sales_order_export_check_blocks_restricted_country(

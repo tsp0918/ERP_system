@@ -23,8 +23,9 @@ class DocStatus:
     BLOCKED   = "BLOCKED"
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
+    SUSPENDED = "SUSPENDED"   # Continuous monitoring hold (IF-24)
 
-    ALL = {DRAFT, OPEN, RELEASED, BLOCKED, COMPLETED, CANCELLED}
+    ALL = {DRAFT, OPEN, RELEASED, BLOCKED, COMPLETED, CANCELLED, SUSPENDED}
 
 
 # ------------------------------------------------------------------

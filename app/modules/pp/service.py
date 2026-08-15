@@ -658,3 +658,53 @@ class ComplianceSnapshotService:
             ))
         for child in node.children:
             self._flatten(child, out, client_id)
+
+
+# ==================================================================
+# Material Alternative Service
+# ==================================================================
+class MaterialAlternativeService:
+    """CRUD for BOM component substitution rules."""
+
+    def __init__(self, db: Session):
+        self.db = db
+        from app.shared.base_repository import BaseRepository
+        self.repo = BaseRepository(models.MaterialAlternative, db)
+
+    def create(
+        self,
+        payload: schemas.MaterialAlternativeCreate,
+        client_id: str,
+        user_email: str,
+    ) -> models.MaterialAlternative:
+        # Check recipe exists and belongs to tenant
+        recipe = self.db.execute(
+            select(models.Recipe).where(
+                models.Recipe.id == payload.recipe_id,
+                models.Recipe.client_id == client_id,
+            )
+        ).scalar_one_or_none()
+        if not recipe:
+            raise NotFoundError("Recipe", payload.recipe_id)
+
+        # Uniqueness: same recipe + original + alternative
+        existing = self.db.query(models.MaterialAlternative).filter(
+            models.MaterialAlternative.client_id == client_id,
+            models.MaterialAlternative.recipe_id == payload.recipe_id,
+            models.MaterialAlternative.original_material_code == payload.original_material_code,
+            models.MaterialAlternative.alternative_material_code == payload.alternative_material_code,
+        ).first()
+        if existing:
+            raise DuplicateError(
+                "MaterialAlternative",
+                "recipe_id+original+alternative",
+                f"{payload.recipe_id}/{payload.original_material_code}/{payload.alternative_material_code}",
+            )
+
+        data = payload.model_dump()
+        data.update({
+            "client_id": client_id,
+            "created_by": user_email,
+            "updated_by": user_email,
+        })
+        return self.repo.create(data)

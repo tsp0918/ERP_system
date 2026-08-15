@@ -51,6 +51,7 @@ class RecipeItemCreate(BaseModel):
     scrap_percent: Decimal = Field(Decimal("0"), ge=0, le=100)
     is_phantom: bool = False
     operation_no: Optional[int] = None
+    preferred_vendor_code: Optional[str] = Field(None, max_length=20)
 
 
 class RecipeItemResponse(ORMModel):
@@ -62,6 +63,7 @@ class RecipeItemResponse(ORMModel):
     scrap_percent: Decimal
     is_phantom: bool
     operation_no: Optional[int]
+    preferred_vendor_code: Optional[str]
 
 
 class RecipeCoProductCreate(BaseModel):
@@ -331,3 +333,40 @@ class BomComplianceSnapshotResponse(BaseModel):
     product_fefta_judgment: Optional[str] = None
     # Flattened components across all BOM levels
     components: List[BomComplianceComponent]
+
+
+# ==================================================================
+# Material Alternative (代替品目)
+# ==================================================================
+class MaterialAlternativeBase(BaseModel):
+    recipe_id: int
+    original_material_code: str = Field(..., max_length=20)
+    alternative_material_code: str = Field(..., max_length=20)
+    substitution_ratio: Decimal = Field(Decimal("1.0"), gt=0,
+        description="Required qty = original qty × substitution_ratio")
+    priority: int = Field(1, ge=1,
+        description="1 = highest priority alternative")
+    valid_from: date = Field(default_factory=date.today)
+    valid_to: date = date(2099, 12, 31)
+    reason: Optional[str] = Field(None, max_length=255,
+        description="SHORTAGE / EOL / COST / QUALIFY")
+
+
+class MaterialAlternativeCreate(MaterialAlternativeBase):
+    pass
+
+
+class MaterialAlternativeUpdate(BaseModel):
+    substitution_ratio: Optional[Decimal] = None
+    priority: Optional[int] = None
+    valid_from: Optional[date] = None
+    valid_to: Optional[date] = None
+    reason: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class MaterialAlternativeResponse(MaterialAlternativeBase, ORMModel):
+    id: int
+    client_id: str
+    is_active: bool
+    created_at: datetime
