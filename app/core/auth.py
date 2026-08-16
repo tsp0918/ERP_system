@@ -37,6 +37,18 @@ def create_access_token(subject: str, client_id: str, extra: dict | None = None)
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
+def create_service_token(subject: str, client_id: str) -> str:
+    """Issue a long-lived JWT for machine-to-machine callers (M2M_TOKEN_EXPIRE_HOURS)."""
+    expire = datetime.now(timezone.utc) + timedelta(hours=settings.M2M_TOKEN_EXPIRE_HOURS)
+    payload = {
+        "sub": subject,
+        "client_id": client_id,
+        "exp": expire,
+        "token_type": "service",
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
 def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
     user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(password, user.hashed_password):

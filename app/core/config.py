@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # Auth
     SECRET_KEY: str = "change-me-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    M2M_TOKEN_EXPIRE_HOURS: int = 24   # long-lived token for machine-to-machine callers
     ALGORITHM: str = "HS256"
 
     # AI Trade Management — 認証ヘッダー (引き継ぎ書 v2.4)
