@@ -633,25 +633,38 @@ class _HttpClient:
         return schemas.TransactionCreateResponse(**data)
 
     def run_screening(self, tx_id: int) -> schemas.TransactionScreeningResponse:
-        """Trigger re-screening.  AI_TM uses a UI-level endpoint; 303 redirect is expected."""
+        """Run full screening pipeline via decision/run-and-two-lists.
+
+        Replaces the old /ui/transactions/{id}/run-screening (UI redirect) +
+        /api/transactions/{id}/ai-judge (deprecated) flow.
+        The endpoint runs matrix_match → 2-list aggregation → tier judgment atomically.
+        Tier 1 auto-approves in the same call.
+        """
         try:
-            r = self._validation.post(
-                f"/ui/transactions/{tx_id}/run-screening",
-                json={},
-                follow_redirects=False,
+            data = self._post(self._validation, f"/decision/{tx_id}/run-and-two-lists", {})
+            return schemas.TransactionScreeningResponse(
+                ok=data.get("ok", True),
+                screening_result=data,
             )
-            # 303 redirect = screening triggered successfully
-            triggered = r.status_code in (200, 201, 303)
-        except Exception:
-            triggered = False
-        return schemas.TransactionScreeningResponse(
-            ok=triggered,
-            screening_result={"triggered": triggered},
-        )
+        except Exception as exc:
+            logger.warning("run_screening(tx_id=%s) failed: %s", tx_id, exc)
+            return schemas.TransactionScreeningResponse(ok=False, screening_result={"error": str(exc)})
 
     def run_ai_judge(self, tx_id: int) -> schemas.TransactionAiJudgeResponse:
-        data = self._post(self._validation, f"/api/transactions/{tx_id}/ai-judge", {})
-        return schemas.TransactionAiJudgeResponse(**data)
+        """Fetch the judgment result that run_screening already stored.
+
+        After run-and-two-lists, the transaction's judgment field is updated
+        (e.g. APPROVED / REJECTED).  We simply read it back to build the
+        TransactionAiJudgeResponse expected by gts/service.py.
+        """
+        data = self._get(self._validation, f"/api/transactions/{tx_id}")
+        raw_judgment = (data.get("judgment") or "").upper()
+        judgment_to_status = {
+            "APPROVED": "CLEAR",
+            "REJECTED": "BLOCKED",
+        }
+        status = judgment_to_status.get(raw_judgment, "REVIEW")
+        return schemas.TransactionAiJudgeResponse(status=status)
 
     def get_transaction(self, tx_id: int) -> schemas.TransactionDetailResponse:
         data = self._get(self._validation, f"/api/transactions/{tx_id}")

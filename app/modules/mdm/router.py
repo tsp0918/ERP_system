@@ -42,11 +42,12 @@ def list_materials(
     limit: int = Query(50, ge=1, le=500),
     material_type: str | None = None,
     hs_code: str | None = None,
+    material_code: str | None = Query(None, description="Exact match on material_code"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     repo = BaseRepository(models.Material, db)
-    filters = {"material_type": material_type, "hs_code": hs_code}
+    filters = {"material_type": material_type, "hs_code": hs_code, "material_code": material_code}
     items = repo.list(client_id=user.client_id, filters=filters, skip=skip, limit=limit)
     total = repo.count(client_id=user.client_id, filters=filters)
     return PaginatedResponse(items=items, total=total, skip=skip, limit=limit)
@@ -143,20 +144,17 @@ def list_bps(
     limit: int = Query(50, ge=1, le=500),
     role: str | None = Query(None, description="Filter by role token (CUSTOMER/VENDOR)"),
     country: str | None = None,
+    bp_code: str | None = Query(None, description="Exact match on bp_code"),
+    crm_account_id: str | None = Query(None, description="Exact match on crm_account_id"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     repo = BaseRepository(models.BusinessPartner, db)
-    items = repo.list(
-        client_id=user.client_id,
-        filters={"country": country},
-        skip=skip, limit=limit,
-    )
+    filters = {"country": country, "bp_code": bp_code, "crm_account_id": crm_account_id}
+    items = repo.list(client_id=user.client_id, filters=filters, skip=skip, limit=limit)
     if role:
         items = [bp for bp in items if bp.has_role(role)]
-    total = len(items) if role else repo.count(
-        client_id=user.client_id, filters={"country": country}
-    )
+    total = len(items) if role else repo.count(client_id=user.client_id, filters=filters)
     return PaginatedResponse(items=items, total=total, skip=skip, limit=limit)
 
 
