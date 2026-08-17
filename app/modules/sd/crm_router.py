@@ -137,6 +137,7 @@ class CrmContractResponse(BaseModel):
     status: str
     export_check_status: str
     aitm_transaction_id: Optional[str] = None
+    customer_bp_code: Optional[str] = None
     end_user_bp_code: Optional[str] = None
 
 
@@ -233,6 +234,7 @@ async def create_sales_order_from_crm(
         status=so.status,
         export_check_status=so.export_check_status,
         aitm_transaction_id=so.aitm_transaction_id,
+        customer_bp_code=so.customer_code,
         end_user_bp_code=so.end_user_bp_code,
     )
 
