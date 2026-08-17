@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.auth_models import User
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError
 from app.modules.gts import models as gts_models
@@ -224,7 +225,8 @@ async def commerce_check(
     await verify_inbound(request, "crm", x_signature, x_timestamp, x_request_id, db, x_tenant_id)
 
     from app.modules.gts.commerce_check import run_commerce_check
-    result = run_commerce_check(db, payload.client_id, payload.model_dump())
+    # Always scope to the configured CRM tenant for consistent BP lookups
+    result = run_commerce_check(db, settings.CRM_CLIENT_ID, payload.model_dump())
     db.commit()
     return result
 

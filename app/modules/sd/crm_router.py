@@ -12,10 +12,11 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.core.auth_models import User
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.exceptions import BusinessRuleError, NotFoundError
 from app.modules.sd import schemas as sd_schemas, service as sd_service
@@ -27,6 +28,31 @@ from app.shared.webhook_dispatcher import enqueue_webhook
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/crm", tags=["CRM Integration"])
+
+
+def _auto_create_customer_bp(db: Session, client_id: str, customer: "CrmCustomerPayload") -> str:
+    """Auto-register a CUSTOMER BusinessPartner from CRM inline data.
+
+    Returns the new bp_code. Called when POST /crm/sales-orders receives
+    a `customer` object instead of an existing `customer_code`.
+    Denied-party screening is triggered via AI_TM (same path as normal BP create).
+    """
+    from app.modules.mdm import models as mdm_models, schemas as mdm_schemas, service as mdm_service
+
+    bp_payload = mdm_schemas.BusinessPartnerCreate(
+        name=customer.name,
+        country=customer.country,
+        address_line1=customer.address,
+        crm_account_id=customer.crm_account_id,
+        email=customer.email,
+        payment_terms=customer.payment_terms,
+        credit_limit=customer.credit_limit,
+        roles="CUSTOMER",
+        auto_screen=True,
+    )
+    bp = mdm_service.BusinessPartnerService(db).create(bp_payload, client_id, "crm-integration@system")
+    db.flush()
+    return bp.bp_code
 
 
 # ==================================================================
@@ -64,11 +90,24 @@ class CrmEndUserPayload(BaseModel):
     crm_account_id: Optional[str] = None
 
 
+class CrmCustomerPayload(BaseModel):
+    """Inline customer registration for new accounts not yet in ERP MDM."""
+    name: str
+    country: str = Field(..., min_length=2, max_length=2)
+    address: Optional[str] = None
+    crm_account_id: Optional[str] = None
+    email: Optional[str] = None
+    payment_terms: Optional[str] = None
+    credit_limit: Optional[Decimal] = None
+
+
 class CrmContractPayload(BaseModel):
     """Inbound payload from CRM for a new contract → SalesOrder (IF-25)."""
     crm_contract_id: str
     crm_engagement_id: Optional[str] = None
-    customer_code: str
+    # customer_code: known ERP BP code. Alternatively supply `customer` for auto-registration.
+    customer_code: Optional[str] = None
+    customer: Optional[CrmCustomerPayload] = None
     currency: str = Field("USD", min_length=3, max_length=3)
     sales_org_code: Optional[str] = None
     customer_po_number: Optional[str] = None
@@ -82,7 +121,14 @@ class CrmContractPayload(BaseModel):
     aitm_transaction_id: Optional[str] = Field(None,
         description="Existing AI_TM transaction ID — links SO to this review instead of creating new one")
     end_user: Optional[CrmEndUserPayload] = None
+    # client_id: informational. ERP always uses settings.CRM_CLIENT_ID for data scoping.
     client_id: str = "DEMO"
+
+    @model_validator(mode="after")
+    def _require_customer_or_code(self) -> "CrmContractPayload":
+        if not self.customer_code and not self.customer:
+            raise ValueError("Either customer_code or customer (inline registration) must be provided")
+        return self
 
 
 class CrmContractResponse(BaseModel):
@@ -113,6 +159,18 @@ async def create_sales_order_from_crm(
     """
     await verify_inbound(request, "crm", x_signature, x_timestamp, x_request_id, db, x_tenant_id)
 
+    # Always scope to the configured CRM tenant, regardless of payload.client_id
+    crm_client_id = settings.CRM_CLIENT_ID
+
+    # Auto-register customer BP when customer_code is not provided
+    customer_code = payload.customer_code
+    if not customer_code and payload.customer:
+        customer_code = _auto_create_customer_bp(db, crm_client_id, payload.customer)
+        logger.info(
+            "[crm_router] Auto-created customer BP bp_code=%s for CRM account=%s",
+            customer_code, payload.customer.crm_account_id,
+        )
+
     # Map CRM payload → SalesOrderCreate
     end_user_create = None
     if payload.end_user:
@@ -125,7 +183,7 @@ async def create_sales_order_from_crm(
 
     so_create = sd_schemas.SalesOrderCreate(
         sales_org_code=payload.sales_org_code,
-        customer_code=payload.customer_code,
+        customer_code=customer_code,
         customer_po_number=payload.customer_po_number,
         currency=payload.currency,
         incoterms=payload.incoterms,
@@ -151,12 +209,12 @@ async def create_sales_order_from_crm(
     )
 
     svc = sd_service.SalesOrderService(db)
-    so = svc.create(so_create, payload.client_id, "crm-integration@system")
+    so = svc.create(so_create, crm_client_id, "crm-integration@system")
     db.commit()
     db.refresh(so)
 
     # IF-26 webhook: notify CRM that SO was created
-    enqueue_webhook(db, payload.client_id, "sales_order.created", {
+    enqueue_webhook(db, crm_client_id, "sales_order.created", {
         "erp_sales_order_id": so.id,
         "erp_document_number": so.document_number,
         "crm_contract_id": payload.crm_contract_id,
@@ -211,9 +269,10 @@ async def continuous_monitoring_hold(
     """IF-24: Set or release a continuous monitoring hold (SUSPENDED status) on a SalesOrder."""
     await verify_inbound(request, "crm", x_signature, x_timestamp, x_request_id, db, x_tenant_id)
 
+    crm_client_id = settings.CRM_CLIENT_ID
     so = db.query(sd_models.SalesOrder).filter(
         sd_models.SalesOrder.id == so_id,
-        sd_models.SalesOrder.client_id == payload.client_id,
+        sd_models.SalesOrder.client_id == crm_client_id,
     ).first()
     if not so:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="SalesOrder not found")
@@ -235,7 +294,7 @@ async def continuous_monitoring_hold(
         so.updated_by = "crm-integration@system"
         event_type = "sales_order.resumed"
 
-    enqueue_webhook(db, payload.client_id, event_type, {
+    enqueue_webhook(db, crm_client_id, event_type, {
         "erp_sales_order_id": so.id,
         "erp_document_number": so.document_number,
         "status": so.status,
@@ -310,13 +369,15 @@ async def create_return_from_crm(
     from app.modules.sd.models import ReturnDocument, ReturnDocumentItem
     from app.shared.base_models import DocStatus
 
+    crm_client_id = settings.CRM_CLIENT_ID
+
     # Validate SO / Delivery references
     so = None
     delivery = None
     if payload.erp_sales_order_id:
         so = db.query(sd_models.SalesOrder).filter(
             sd_models.SalesOrder.id == payload.erp_sales_order_id,
-            sd_models.SalesOrder.client_id == payload.client_id,
+            sd_models.SalesOrder.client_id == crm_client_id,
         ).first()
         if not so:
             raise HTTPException(
@@ -326,7 +387,7 @@ async def create_return_from_crm(
     if payload.erp_delivery_id:
         delivery = db.query(sd_models.Delivery).filter(
             sd_models.Delivery.id == payload.erp_delivery_id,
-            sd_models.Delivery.client_id == payload.client_id,
+            sd_models.Delivery.client_id == crm_client_id,
         ).first()
         if not delivery:
             raise HTTPException(
@@ -334,10 +395,10 @@ async def create_return_from_crm(
                 detail=f"Delivery {payload.erp_delivery_id} not found",
             )
 
-    return_number = next_number(db, payload.client_id, "RETURN")
+    return_number = next_number(db, crm_client_id, "RETURN")
 
     ret = ReturnDocument(
-        client_id=payload.client_id,
+        client_id=crm_client_id,
         document_number=return_number,
         document_date=payload.return_date,
         status=DocStatus.OPEN,
@@ -353,7 +414,7 @@ async def create_return_from_crm(
 
     for idx, item in enumerate(payload.items, start=1):
         ret.items.append(ReturnDocumentItem(
-            client_id=payload.client_id,
+            client_id=crm_client_id,
             item_no=idx * 10,
             material_code=item.material_code,
             quantity=item.quantity,
@@ -368,7 +429,7 @@ async def create_return_from_crm(
     db.flush()
 
     # IF-30: notify CRM that return document is created (E4-2 + E4-4)
-    enqueue_webhook(db, payload.client_id, "return.posted", {
+    enqueue_webhook(db, crm_client_id, "return.posted", {
         "erp_return_id": ret.id,
         "erp_document_number": ret.document_number,
         "crm_return_id": payload.crm_return_id,

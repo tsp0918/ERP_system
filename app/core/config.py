@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------
     # CRM inbound auth (CRM → ERP calls)
     # ---------------------------------------------------------------
+    # Tenant (client_id) under which all CRM-originated data is stored.
+    # Must match the client_id of the ERP user account used for seeding/operations.
+    # CRM should use this same value in payload.client_id for consistency.
+    CRM_CLIENT_ID: str = "DEMO"
+
     CRM_INBOUND_BEARER: str = ""
     CRM_INBOUND_SIGNING_SECRET: str = ""
     CRM_INBOUND_SIGNING_SECRET_PREVIOUS: str = ""   # kept during key rotation

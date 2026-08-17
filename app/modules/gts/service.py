@@ -252,7 +252,8 @@ class GTSService:
             logger.warning("AI judge failed for tx_id=%s: %s", tx.id, e)
 
         # 判定ステータスを ERP 内部形式にマッピング
-        ai_status = judge_result.status if judge_result else tx.ai_status or "PENDING"
+        # tx is TransactionCreateResponse — it has no ai_status field; use "PENDING" when judge is unavailable
+        ai_status = judge_result.status if judge_result else "PENDING"
         judgment_map = {
             "CLEAR": "APPROVED",
             "REVIEW": "NEEDS_REVIEW",
