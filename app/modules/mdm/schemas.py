@@ -104,6 +104,8 @@ class BusinessPartnerBase(BaseModel):
 class BusinessPartnerCreate(BusinessPartnerBase):
     bp_code: Optional[str] = Field(None,
         description="If omitted, auto-generated as BP-XXXXXXX")
+    crm_account_id: Optional[str] = Field(None, max_length=100,
+        description="CRM account ID for M2M linkage (IF-27)")
     auto_screen: bool = Field(True,
         description="Trigger denied-party screening via AI_TradeManagement")
 
@@ -120,6 +122,7 @@ class BusinessPartnerUpdate(BaseModel):
     credit_limit: Optional[Decimal] = None
     payment_terms: Optional[str] = None
     currency: Optional[str] = None
+    crm_account_id: Optional[str] = None
     is_denied_party: Optional[bool] = None
     is_active: Optional[bool] = None
 
@@ -127,6 +130,7 @@ class BusinessPartnerUpdate(BaseModel):
 class BusinessPartnerResponse(BusinessPartnerBase, AuditFields):
     id: int
     bp_code: str
+    crm_account_id: Optional[str] = None
     is_denied_party: bool
     screening_status: str = "UNSCREENED"
     denial_list: Optional[str] = None
